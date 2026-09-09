@@ -120,6 +120,12 @@ capped — it is their money.
 - The window is the **UTC day**; spend from previous days never counts against today.
 - All arithmetic is in integer cents (`amount_minor`), never floats.
 
+A one-off top-up is separate from the cap: `/add <id> <eur>` grants balance that
+**does not reset daily** and is spent only once the day’s allowance is used up, so a
+user can be given extra without permanently raising their limit. A negative amount
+takes it back. Spending draws from the daily allowance first, then the balance, and
+a released reservation returns each part to where it came from.
+
 Owner controls: `/limits` shows everyone's cap and today's spend; `/limit <id> <eur>`
 sets one (`none` = unlimited, `0` = blocks ordering entirely). Users see their own
 position with `/usage`, and `/balance` shows a non-owner their remaining allowance

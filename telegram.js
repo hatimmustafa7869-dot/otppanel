@@ -87,22 +87,26 @@ function saveWatchers() {
   }
 }
 
-function watchOrder(orderId, chatId, label, userId, priceMinor) {
+function watchOrder(orderId, chatId, label, userId, priceMinor, split) {
   watchers.set(String(orderId), {
     orderId: String(orderId),
     chatId,
     label,
     userId: userId === undefined ? null : String(userId),
     priceMinor: Number(priceMinor) || 0,
+    // How the reservation was funded, so a release reverses it exactly.
+    split: split || { fromDaily: Number(priceMinor) || 0, fromCredit: 0 },
     startedAt: Date.now(),
   });
   saveWatchers();
 }
 
 // An order that ends without an SMS is never charged, so give the reservation
-// back to the user's daily allowance.
+// back — daily to daily, credit to credit.
 function releaseReservation(w) {
-  if (w && w.userId && w.priceMinor) users.refundSpend(w.userId, w.priceMinor);
+  if (!w || !w.userId) return;
+  const split = w.split || { fromDaily: w.priceMinor || 0, fromCredit: 0 };
+  if (split.fromDaily || split.fromCredit) users.refundSpend(w.userId, split);
 }
 
 function unwatch(orderId) {
@@ -193,6 +197,7 @@ const OWNER_HELP = [
   '<code>/revoke &lt;id&gt;</code> — remove someone’s access',
   '<code>/limits</code> — everyone’s daily limit and spend',
   '<code>/limit &lt;id&gt; &lt;eur&gt;</code> — set a daily limit (<code>none</code> = unlimited)',
+  '<code>/add &lt;id&gt; &lt;eur&gt;</code> — add balance on top of their daily limit',
   '<code>/whoami</code> — your Telegram id',
 ].join('\n');
 
@@ -295,12 +300,14 @@ async function handleCommand(msg) {
       if (!owner) {
         const left = users.remaining(msg.from.id);
         if (left === null) return send(chatId, '💰 You have no spending limit.');
+        const myCredit = users.getCredit(msg.from.id);
         return send(
           chatId,
-          '💰 <b>' + esc(users.eur(left)) + '</b> left today\n' +
-            'Spent: ' + esc(users.eur(users.todaySpend(msg.from.id))) +
-            ' of ' + esc(users.eur(users.getLimit(msg.from.id))) + '\n' +
-            '<i>Resets at 00:00 UTC.</i>'
+          '💰 <b>' + esc(users.eur(left)) + '</b> available\n' +
+            esc(users.eur(users.dailyRoom(msg.from.id))) + ' left of today’s ' +
+            esc(users.eur(users.getLimit(msg.from.id))) + ' limit' +
+            (myCredit ? '\n' + esc(users.eur(myCredit)) + ' added balance' : '') +
+            '\n<i>Daily part resets at 00:00 UTC.</i>'
         );
       }
       const { status, data } = await juicy('/account');
@@ -311,11 +318,14 @@ async function handleCommand(msg) {
     case '/usage': {
       const left = users.remaining(msg.from.id);
       if (left === null) return send(chatId, 'You have no spending limit.');
+      const credit = users.getCredit(msg.from.id);
       return send(
         chatId,
-        'Spent today: <b>' + esc(users.eur(users.todaySpend(msg.from.id))) + '</b>\n' +
-          'Remaining: <b>' + esc(users.eur(left)) + '</b> of ' +
-          esc(users.eur(users.getLimit(msg.from.id)))
+        'Available now: <b>' + esc(users.eur(left)) + '</b>\n\n' +
+          'Daily limit: ' + esc(users.eur(users.getLimit(msg.from.id))) +
+          ' (spent ' + esc(users.eur(users.todaySpend(msg.from.id))) + ' today)\n' +
+          (credit ? 'Added balance: ' + esc(users.eur(credit)) + '\n' : '') +
+          '<i>The daily part resets at 00:00 UTC; added balance does not expire.</i>'
       );
     }
 
@@ -341,6 +351,42 @@ async function handleCommand(msg) {
       return;
     }
 
+    case '/add': {
+      if (!owner) return send(chatId, 'Owner only.');
+      if (args.length < 2) {
+        return send(chatId, 'Usage: <code>/add 123456789 5</code> — adds €5.00 of balance.\n' +
+          'Use a negative amount to take it back: <code>/add 123456789 -2</code>');
+      }
+      const [target, rawAmount] = args;
+      const amount = Number(rawAmount);
+      if (!Number.isFinite(amount) || amount === 0) {
+        return send(chatId, 'Amount must be a non-zero number of EUR, e.g. <code>5</code> or <code>2.50</code>.');
+      }
+      if (!users.isApproved(target)) {
+        return send(chatId, '⚠️ <code>' + esc(target) + '</code> is not an approved user. Approve them first.');
+      }
+
+      const minor = Math.round(amount * 100);
+      const total = users.addCredit(target, minor);
+      const verb = minor > 0 ? 'Added' : 'Removed';
+
+      await send(
+        chatId,
+        '💳 ' + verb + ' <b>' + esc(users.eur(Math.abs(minor))) + '</b> ' +
+          (minor > 0 ? 'to' : 'from') + ' <code>' + esc(target) + '</code>\n' +
+          'Their balance is now <b>' + esc(users.eur(total)) + '</b> ' +
+          '(plus ' + esc(users.eur(users.dailyRoom(target))) + ' left of today’s limit).'
+      );
+      await send(
+        target,
+        minor > 0
+          ? '💳 <b>' + esc(users.eur(minor)) + ' added to your balance.</b>\n\n' +
+            'Balance: <b>' + esc(users.eur(total)) + '</b>\nUse <code>/usage</code> to check it any time.'
+          : 'ℹ️ Your balance was adjusted to <b>' + esc(users.eur(total)) + '</b>.'
+      ).catch(() => {});
+      return;
+    }
+
     case '/limits': {
       if (!owner) return send(chatId, 'Owner only.');
       const { approved, ownerIds } = users.list();
@@ -350,9 +396,12 @@ async function handleCommand(msg) {
           lines.push('👑 ' + userLabel(u) + ' — unlimited');
           continue;
         }
+        const credit = users.getCredit(u.id);
         lines.push(
           '• ' + userLabel(u) + '\n    ' +
-          esc(users.eur(users.todaySpend(u.id))) + ' spent of ' + esc(users.eur(users.getLimit(u.id)))
+          esc(users.eur(users.todaySpend(u.id))) + ' spent of ' + esc(users.eur(users.getLimit(u.id))) +
+          (credit ? ' · +' + esc(users.eur(credit)) + ' balance' : '') +
+          ' · <b>' + esc(users.eur(users.remaining(u.id))) + '</b> available'
         );
       }
       lines.push('', '<i>Default for new users: ' + esc(users.eur(users.DEFAULT_LIMIT_MINOR)) + '/day</i>');
@@ -425,8 +474,8 @@ async function handleCommand(msg) {
         return send(chatId, '❌ ' + esc(data.detail || data.title || 'Order failed.'));
       }
 
-      users.addSpend(msg.from.id, priceMinor);
-      watchOrder(data.id, chatId, svc.name + ' · ' + country, msg.from.id, priceMinor);
+      const split = users.addSpend(msg.from.id, priceMinor);
+      watchOrder(data.id, chatId, svc.name + ' · ' + country, msg.from.id, priceMinor, split);
 
       const nowLeft = users.remaining(msg.from.id);
       return send(
@@ -532,8 +581,8 @@ async function doReuse(chatId, orderId, userId) {
   if (status !== 200 && status !== 201) {
     return send(chatId, '❌ ' + esc(data.detail || data.title || 'Reuse failed.'));
   }
-  users.addSpend(userId, halfMinor);
-  watchOrder(data.id, chatId, (data.service && data.service.name) || 'Reused', userId, halfMinor);
+  const reuseSplit = users.addSpend(userId, halfMinor);
+  watchOrder(data.id, chatId, (data.service && data.service.name) || 'Reused', userId, halfMinor, reuseSplit);
   return send(
     chatId,
     '♻️ Reordered <b>' + esc(data.phone_number) + '</b> · <code>#' + esc(data.id) + '</code>\n' +

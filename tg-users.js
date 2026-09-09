@@ -8,7 +8,10 @@ const path = require('path');
 
 const STORE_FILE = path.join(__dirname, 'data', 'tg-users.json');
 
-const empty = { ownerId: null, approved: {}, pending: {}, denied: {}, limits: {}, spend: {} };
+const empty = {
+  ownerId: null, approved: {}, pending: {}, denied: {},
+  limits: {}, spend: {}, credits: {},
+};
 let store = null;
 
 function load() {
@@ -18,8 +21,9 @@ function load() {
     // Older stores predate spending limits.
     store.limits = store.limits || {};
     store.spend = store.spend || {};
+    store.credits = store.credits || {};
   } catch {
-    store = { ...empty, approved: {}, pending: {}, denied: {}, limits: {}, spend: {} };
+    store = { ...empty, approved: {}, pending: {}, denied: {}, limits: {}, spend: {}, credits: {} };
   }
   return store;
 }
@@ -192,37 +196,91 @@ function todaySpend(id) {
   return Number(rec.minor) || 0;
 }
 
-// null means unlimited remaining.
-function remaining(id) {
+// ---------- Top-up credit ----------
+// Credit is a one-off grant that does NOT reset daily. It is spent only after
+// the day's allowance is used up, so /add tops someone up without permanently
+// raising their cap.
+
+function getCredit(id) {
+  return Math.max(0, Number(load().credits[String(id)]) || 0);
+}
+
+function addCredit(id, minor) {
+  const s = load();
+  const key = String(id);
+  const next = Math.max(0, getCredit(key) + Math.round(Number(minor) || 0));
+  s.credits[key] = next;
+  save();
+  return next;
+}
+
+function setCredit(id, minor) {
+  const s = load();
+  s.credits[String(id)] = Math.max(0, Math.round(Number(minor) || 0));
+  save();
+  return s.credits[String(id)];
+}
+
+// Room left in the daily allowance alone, ignoring credit.
+function dailyRoom(id) {
   const limit = getLimit(id);
   if (limit === null) return null;
   return Math.max(0, limit - todaySpend(id));
 }
 
-function addSpend(id, minor) {
-  const amount = Math.max(0, Math.round(Number(minor) || 0));
-  if (!amount) return todaySpend(id);
-  const s = load();
-  const key = String(id);
-  const rec = s.spend[key];
-  s.spend[key] = rec && rec.date === today()
-    ? { date: rec.date, minor: (Number(rec.minor) || 0) + amount }
-    : { date: today(), minor: amount };
-  save();
-  return s.spend[key].minor;
+// null means unlimited remaining. Otherwise: what is left of today's cap, plus
+// any credit that has been granted.
+function remaining(id) {
+  const room = dailyRoom(id);
+  if (room === null) return null;
+  return room + getCredit(id);
 }
 
-// An order that ends with no SMS is never charged, so the reservation is released.
-function refundSpend(id, minor) {
+// Spends against the day's allowance first, then credit. Returns the split so
+// a later release can reverse it exactly.
+function addSpend(id, minor) {
   const amount = Math.max(0, Math.round(Number(minor) || 0));
-  if (!amount) return todaySpend(id);
-  const s = load();
-  const key = String(id);
-  const rec = s.spend[key];
-  if (!rec || rec.date !== today()) return 0;
-  rec.minor = Math.max(0, (Number(rec.minor) || 0) - amount);
-  save();
-  return rec.minor;
+  if (!amount) return { fromDaily: 0, fromCredit: 0 };
+
+  const room = dailyRoom(id);
+  const fromDaily = room === null ? amount : Math.min(amount, room);
+  const fromCredit = amount - fromDaily;
+
+  if (fromDaily) {
+    const s = load();
+    const key = String(id);
+    const rec = s.spend[key];
+    s.spend[key] = rec && rec.date === today()
+      ? { date: rec.date, minor: (Number(rec.minor) || 0) + fromDaily }
+      : { date: today(), minor: fromDaily };
+    save();
+  }
+  if (fromCredit) addCredit(id, -fromCredit);
+
+  return { fromDaily, fromCredit };
+}
+
+// An order that ends with no SMS is never charged, so the reservation is
+// released — each part back to where it came from.
+function refundSpend(id, split) {
+  // Tolerates being handed a plain amount, which is treated as daily spend.
+  const parts = typeof split === 'object' && split !== null
+    ? split
+    : { fromDaily: Math.round(Number(split) || 0), fromCredit: 0 };
+
+  const daily = Math.max(0, Number(parts.fromDaily) || 0);
+  const credit = Math.max(0, Number(parts.fromCredit) || 0);
+
+  if (credit) addCredit(id, credit);
+  if (daily) {
+    const s = load();
+    const rec = s.spend[String(id)];
+    if (rec && rec.date === today()) {
+      rec.minor = Math.max(0, (Number(rec.minor) || 0) - daily);
+      save();
+    }
+  }
+  return remaining(id);
 }
 
 function eur(minor) {
@@ -234,5 +292,6 @@ module.exports = {
   load, ownerId, ownerIds, isOwner, claimOwner, isApproved, isDenied, isPending,
   requestAccess, approve, deny, revoke, list, describe,
   getLimit, setLimit, todaySpend, remaining, addSpend, refundSpend, eur,
+  getCredit, addCredit, setCredit, dailyRoom,
   DEFAULT_LIMIT_MINOR,
 };
