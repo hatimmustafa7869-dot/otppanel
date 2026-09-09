@@ -6,14 +6,13 @@
 // Every command that can spend money is gated on an explicit allowlist of
 // Telegram user ids — the bot's username is discoverable, so without that
 // anyone who finds it could order numbers against the account balance.
-const fs = require('fs');
-const path = require('path');
 const { juicy, money, codeOf } = require('./juicysms');
 const users = require('./tg-users');
+const backend = require('./store');
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TG_API = 'https://api.telegram.org/bot' + BOT_TOKEN;
-const WATCH_FILE = path.join(__dirname, 'data', 'watchers.json');
+const WATCH_KEY = 'watchers';
 const POLL_MS = 5000;
 const MAX_WATCH_MS = 11 * 60 * 1000; // orders expire after 10 minutes
 
@@ -69,22 +68,13 @@ function esc(s) {
 
 let watchers = new Map();
 
-function loadWatchers() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(WATCH_FILE, 'utf8'));
-    watchers = new Map(raw.map((w) => [String(w.orderId), w]));
-  } catch {
-    watchers = new Map();
-  }
+async function loadWatchers() {
+  const raw = await backend.read(WATCH_KEY);
+  watchers = new Map((Array.isArray(raw) ? raw : []).map((w) => [String(w.orderId), w]));
 }
 
 function saveWatchers() {
-  try {
-    fs.mkdirSync(path.dirname(WATCH_FILE), { recursive: true });
-    fs.writeFileSync(WATCH_FILE, JSON.stringify([...watchers.values()], null, 2));
-  } catch (err) {
-    console.error('Could not persist watchers:', err.message);
-  }
+  backend.write(WATCH_KEY, [...watchers.values()]);
 }
 
 function watchOrder(orderId, chatId, label, userId, priceMinor, split, meta) {
@@ -981,9 +971,12 @@ function isConfigured() {
   return Boolean(BOT_TOKEN);
 }
 
-function start() {
+// Async now: persisted state must be in memory before the first update is
+// handled, or an approved user could be treated as a stranger.
+async function start() {
   if (!isConfigured()) return false;
-  loadWatchers();
+  await users.init();
+  await loadWatchers();
   setInterval(() => {
     tick().catch((err) => console.error('watch tick failed:', err.message));
   }, POLL_MS);

@@ -415,9 +415,23 @@ app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log('OTP panel running on http://localhost:' + PORT);
-  if (telegram.start()) {
+const store = require('./store');
+
+// Storage comes up before the port opens: handling a Telegram update with an
+// empty user store would treat approved users as strangers.
+(async () => {
+  try {
+    const where = await store.init();
+    console.log('Store: ' + where);
+    const migrated = await store.migrateFromFiles(['tg-users', 'watchers']);
+    if (migrated.length) console.log('Store: imported from files -> ' + migrated.join(', '));
+  } catch (err) {
+    console.error('Store failed to start:', err.message);
+    console.error('Refusing to serve without durable storage — fix the database settings.');
+    process.exit(1);
+  }
+
+  if (await telegram.start()) {
     const owners = telegram.users.ownerIds();
     console.log(
       'Telegram bot: ENABLED — owner(s): ' + (owners.length ? owners.join(', ') : 'unclaimed (first /start claims it)')
@@ -426,6 +440,20 @@ app.listen(PORT, () => {
       console.warn('TELEGRAM_WEBHOOK_SECRET is not set — the webhook route is disabled.');
     }
   }
+
+  startServer();
+})();
+
+// Persist anything still debounced rather than losing the last write.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    store.flush().finally(() => process.exit(0));
+  });
+}
+
+function startServer() {
+  app.listen(PORT, () => {
+  console.log('OTP panel running on http://localhost:' + PORT);
   if (AUTH_ENABLED) {
     console.log('Login gate: ENABLED (user "' + PANEL_USER + '")');
     if (!process.env.SESSION_SECRET) {
@@ -439,3 +467,4 @@ app.listen(PORT, () => {
     console.warn('');
   }
 });
+}

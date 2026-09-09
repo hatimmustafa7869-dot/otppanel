@@ -3,10 +3,9 @@
 // Access is request-and-approve rather than a fixed list: a stranger who finds
 // the bot gets a pending request, and only the owner can turn that into access.
 // This matters because every approved user spends the owner's JuicySMS balance.
-const fs = require('fs');
-const path = require('path');
+const backend = require('./store');
 
-const STORE_FILE = path.join(__dirname, 'data', 'tg-users.json');
+const STORE_KEY = 'tg-users';
 
 const empty = {
   ownerId: null, approved: {}, pending: {}, denied: {},
@@ -14,27 +13,36 @@ const empty = {
 };
 let store = null;
 
+function blank() {
+  return { ownerId: null, approved: {}, pending: {}, denied: {}, limits: {}, spend: {}, credits: {} };
+}
+
+function normalise(raw) {
+  const s = { ...empty, ...(raw || {}) };
+  // Older records predate spending limits and credit.
+  s.approved = s.approved || {};
+  s.pending = s.pending || {};
+  s.denied = s.denied || {};
+  s.limits = s.limits || {};
+  s.spend = s.spend || {};
+  s.credits = s.credits || {};
+  return s;
+}
+
+// Reads the persisted state once, at boot, into memory. Everything below stays
+// synchronous so no call site has to become async.
+async function init() {
+  store = normalise(await backend.read(STORE_KEY));
+  return store;
+}
+
 function load() {
-  if (store) return store;
-  try {
-    store = { ...empty, ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) };
-    // Older stores predate spending limits.
-    store.limits = store.limits || {};
-    store.spend = store.spend || {};
-    store.credits = store.credits || {};
-  } catch {
-    store = { ...empty, approved: {}, pending: {}, denied: {}, limits: {}, spend: {}, credits: {} };
-  }
+  if (!store) store = blank();
   return store;
 }
 
 function save() {
-  try {
-    fs.mkdirSync(path.dirname(STORE_FILE), { recursive: true });
-    fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2));
-  } catch (err) {
-    console.error('Could not persist Telegram users:', err.message);
-  }
+  backend.write(STORE_KEY, store);
 }
 
 // Ids from the environment are always approved and cannot be revoked from
@@ -324,7 +332,7 @@ function eur(minor) {
 }
 
 module.exports = {
-  load, ownerId, ownerIds, isOwner, claimOwner, isApproved, isDenied, isPending,
+  init, load, ownerId, ownerIds, isOwner, claimOwner, isApproved, isDenied, isPending,
   requestAccess, approve, deny, unban, revoke, list, describe,
   getLimit, setLimit, todaySpend, remaining, addSpend, refundSpend, eur,
   getCredit, addCredit, setCredit, dailyRoom, totalCredit, isWalletMode,
