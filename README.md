@@ -84,6 +84,36 @@ Upstream status codes and RFC 9457 problem bodies are passed through untouched, 
 can react to `out_of_stock`, `insufficient_balance`, `concurrent_order_limit`, and
 `rate_limited` by code.
 
+## Storage
+
+Bot state — approvals, balances, bans and pending order watchers — must outlive a
+deploy. On Hostinger a deploy **replaces the application directory**, so anything
+under `./data` is destroyed on every push and approved users silently become
+strangers again.
+
+Two backends, chosen by configuration:
+
+**MySQL (recommended).** Create a database in hPanel under Databases, then set:
+
+
+
+The table is created automatically on first boot, and any existing `./data` files
+are imported once if the database is empty.
+
+**Files.** Without MySQL settings, state is JSON under `DATA_DIR` (default `./data`).
+That only survives deploys if `DATA_DIR` points somewhere the deploy does not
+overwrite, e.g. `/home/USERNAME/otp-panel-data`.
+
+State is small, so each key is stored as a single JSON blob rather than a schema. It
+is read once at boot into memory and written back debounced, which keeps callers
+synchronous. Storage starts **before** the port opens, because handling a Telegram
+update against an empty store would treat approved users as strangers.
+
+A configured database that cannot be reached is **fatal** — the app retries a few
+times (MySQL is sometimes slow to wake after a deploy) and then refuses to start,
+rather than silently falling back to ephemeral storage and recreating the bug. If the
+site is down after a deploy, check the database settings first.
+
 ## Telegram bot
 
 Order numbers and receive codes from Telegram. Runs as a **webhook**, not long

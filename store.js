@@ -78,16 +78,33 @@ async function init() {
     keepAliveInitialDelay: 10000,
   });
 
-  await pool.query(
-    'CREATE TABLE IF NOT EXISTS panel_state (' +
-      '`k` VARCHAR(64) NOT NULL PRIMARY KEY,' +
-      '`v` LONGTEXT NOT NULL,' +
-      '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP' +
-      ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
-  );
-
-  ready = true;
-  return 'mysql:' + MYSQL_CONFIG.database + '@' + MYSQL_CONFIG.host;
+  // MySQL on shared hosting is sometimes not accepting connections yet in the
+  // seconds after a deploy. Retry briefly rather than failing the whole boot
+  // over a database that is merely slow to wake up.
+  const attempts = 5;
+  let lastErr = null;
+  for (let i = 1; i <= attempts; i += 1) {
+    try {
+      await pool.query(
+        'CREATE TABLE IF NOT EXISTS panel_state (' +
+          '`k` VARCHAR(64) NOT NULL PRIMARY KEY,' +
+          '`v` LONGTEXT NOT NULL,' +
+          '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+      );
+      ready = true;
+      return 'mysql:' + MYSQL_CONFIG.database + '@' + MYSQL_CONFIG.host;
+    } catch (err) {
+      lastErr = err;
+      // Bad credentials or a missing database will never succeed on a retry.
+      if (['ER_ACCESS_DENIED_ERROR', 'ER_BAD_DB_ERROR'].includes(err.code)) break;
+      if (i < attempts) {
+        console.warn('store: database not ready (' + err.code + '), retry ' + i + '/' + attempts);
+        await new Promise((r) => setTimeout(r, i * 1000));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 async function read(key) {
