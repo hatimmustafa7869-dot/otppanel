@@ -120,7 +120,7 @@ async function tick() {
     if (Date.now() - w.startedAt > MAX_WATCH_MS) {
       unwatch(w.orderId);
       releaseReservation(w);
-      await send(w.chatId, '⌛ Order <code>#' + esc(w.orderId) + '</code> expired with no SMS. You were not charged.');
+      await send(w.chatId, '⌛ That number expired with no SMS. You were not charged.');
       continue;
     }
 
@@ -149,7 +149,7 @@ async function tick() {
     } else if (data.order_status && data.order_status !== 'pending') {
       unwatch(w.orderId);
       releaseReservation(w); // finished with no message => not charged
-      await send(w.chatId, 'Order <code>#' + esc(w.orderId) + '</code> is now <b>' + esc(data.order_status) + '</b>.');
+      await send(w.chatId, 'That order is now <b>' + esc(data.order_status) + '</b>.');
     }
   }
 }
@@ -305,7 +305,7 @@ async function placeOrder(chatId, userId, svc, country) {
   await send(
     chatId,
     '📱 <b>' + esc(data.phone_number) + '</b>\n' +
-      esc(svc.name) + ' · ' + esc(country) + ' · <code>#' + esc(data.id) + '</code>\n' +
+      esc(svc.name) + ' · ' + esc(country) + '\n' +
       (nowLeft === null ? '' : '<i>' + esc(users.eur(nowLeft)) + ' left</i>\n') +
       '\n<i>Waiting for the SMS — I will send the code here.</i>',
     {
@@ -334,10 +334,10 @@ async function skipAndReorder(chatId, userId, orderId) {
 
   const meta = w && w.meta;
   if (!meta || !meta.serviceId) {
-    return send(chatId, '⛔ Skipped <code>#' + esc(orderId) + '</code>.\n<i>Order again with /order.</i>');
+    return send(chatId, '⛔ Skipped that number.\n<i>Order again with /order.</i>');
   }
 
-  await send(chatId, '⛔ Skipped <code>#' + esc(orderId) + '</code> — getting you another number…');
+  await send(chatId, '⛔ Skipped — getting you another number…');
 
   const svc = await findService(meta.serviceName, meta.country);
   if (!svc) return send(chatId, '❌ Could not look up ' + esc(meta.serviceName) + ' again.');
@@ -869,7 +869,7 @@ async function handleCommand(msg) {
         chatId,
         '📱 <b>' + esc(order.phone_number) + '</b>\n' +
           esc(order.service ? order.service.name : '') + ' · ' + esc(order.country) +
-          ' · <code>#' + esc(order.id) + '</code>\n' +
+          '\n' +
           'Status: <b>' + esc(order.status) + '</b>\n' +
           (code ? '\nCode: <code>' + esc(code) + '</code>' : '\n<i>No SMS yet.</i>')
       );
@@ -892,7 +892,7 @@ async function handleCommand(msg) {
       const w = watchers.get(String(order.id));
       unwatch(order.id);
       releaseReservation(w); // canceled before an SMS => nothing was charged
-      return send(chatId, (action === 'skip' ? '⛔ Skipped' : '🚫 Canceled') + ' <code>#' + esc(order.id) + '</code>.');
+      return send(chatId, (action === 'skip' ? '⛔ Skipped' : '🚫 Canceled') + ' that number.');
     }
 
     case '/reuse': {
@@ -952,7 +952,7 @@ async function doReuse(chatId, orderId, userId) {
   watchOrder(data.id, chatId, (data.service && data.service.name) || 'Reused', userId, halfMinor, reuseSplit);
   return send(
     chatId,
-    '♻️ Reordered <b>' + esc(data.phone_number) + '</b> · <code>#' + esc(data.id) + '</code>\n' +
+    '♻️ Reordered <b>' + esc(data.phone_number) + '</b>\n' +
       '<i>Waiting for the SMS…</i>'
   );
 }
@@ -1012,7 +1012,7 @@ async function handleCallback(cb) {
     const w = watchers.get(String(orderId));
     unwatch(orderId);
     releaseReservation(w);
-    return send(chatId, '🚫 Canceled <code>#' + esc(orderId) + '</code>.');
+    return send(chatId, '🚫 Canceled that number.');
   }
 }
 
