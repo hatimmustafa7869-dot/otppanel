@@ -87,14 +87,22 @@ function saveWatchers() {
   }
 }
 
-function watchOrder(orderId, chatId, label) {
+function watchOrder(orderId, chatId, label, userId, priceMinor) {
   watchers.set(String(orderId), {
     orderId: String(orderId),
     chatId,
     label,
+    userId: userId === undefined ? null : String(userId),
+    priceMinor: Number(priceMinor) || 0,
     startedAt: Date.now(),
   });
   saveWatchers();
+}
+
+// An order that ends without an SMS is never charged, so give the reservation
+// back to the user's daily allowance.
+function releaseReservation(w) {
+  if (w && w.userId && w.priceMinor) users.refundSpend(w.userId, w.priceMinor);
 }
 
 function unwatch(orderId) {
@@ -109,6 +117,7 @@ async function tick() {
   for (const w of [...watchers.values()]) {
     if (Date.now() - w.startedAt > MAX_WATCH_MS) {
       unwatch(w.orderId);
+      releaseReservation(w);
       await send(w.chatId, '⌛ Order <code>#' + esc(w.orderId) + '</code> expired with no SMS. You were not charged.');
       continue;
     }
@@ -134,6 +143,7 @@ async function tick() {
       );
     } else if (data.order_status && data.order_status !== 'pending') {
       unwatch(w.orderId);
+      releaseReservation(w); // finished with no message => not charged
       await send(w.chatId, 'Order <code>#' + esc(w.orderId) + '</code> is now <b>' + esc(data.order_status) + '</b>.');
     }
   }
@@ -167,7 +177,8 @@ const HELP = [
   '<code>/skip</code> — cancel and blacklist the number',
   '<code>/reuse</code> — reorder the last number at half price',
   '<code>/price &lt;service&gt;</code> — look up a price',
-  '<code>/balance</code> — account balance',
+  '<code>/balance</code> — balance / your remaining allowance',
+  '<code>/usage</code> — what you have spent today',
   '<code>/history</code> — recent orders',
   '',
   'Countries: uk, usa, nl, de, pl, ph',
@@ -180,6 +191,8 @@ const OWNER_HELP = [
   '<code>/pending</code> — access requests waiting on you',
   '<code>/users</code> — who has access',
   '<code>/revoke &lt;id&gt;</code> — remove someone’s access',
+  '<code>/limits</code> — everyone’s daily limit and spend',
+  '<code>/limit &lt;id&gt; &lt;eur&gt;</code> — set a daily limit (<code>none</code> = unlimited)',
   '<code>/whoami</code> — your Telegram id',
 ].join('\n');
 
@@ -198,7 +211,8 @@ async function notifyOwnerOfRequest(from) {
     await send(
       owner,
       '🔔 <b>Access request</b>\n\n' + userLabel(users.describe(from)) +
-        '\n\n<i>Approving lets them order numbers, which spends your balance.</i>',
+        '\n\n<i>Approving lets them order numbers, capped at ' +
+        esc(users.eur(users.DEFAULT_LIMIT_MINOR)) + '/day. Change it with /limit.</i>',
       {
         reply_markup: {
           inline_keyboard: [[
@@ -277,9 +291,72 @@ async function handleCommand(msg) {
     }
 
     case '/balance': {
+      // Regular users see their own allowance, not the account's full balance.
+      if (!owner) {
+        const left = users.remaining(msg.from.id);
+        if (left === null) return send(chatId, '💰 You have no spending limit.');
+        return send(
+          chatId,
+          '💰 <b>' + esc(users.eur(left)) + '</b> left today\n' +
+            'Spent: ' + esc(users.eur(users.todaySpend(msg.from.id))) +
+            ' of ' + esc(users.eur(users.getLimit(msg.from.id))) + '\n' +
+            '<i>Resets at 00:00 UTC.</i>'
+        );
+      }
       const { status, data } = await juicy('/account');
       if (status !== 200) return send(chatId, '❌ ' + esc(data.detail || data.title || 'Could not read the account.'));
       return send(chatId, '💰 Balance: <b>' + esc(money(data.balance)) + '</b>');
+    }
+
+    case '/usage': {
+      const left = users.remaining(msg.from.id);
+      if (left === null) return send(chatId, 'You have no spending limit.');
+      return send(
+        chatId,
+        'Spent today: <b>' + esc(users.eur(users.todaySpend(msg.from.id))) + '</b>\n' +
+          'Remaining: <b>' + esc(users.eur(left)) + '</b> of ' +
+          esc(users.eur(users.getLimit(msg.from.id)))
+      );
+    }
+
+    case '/limit': {
+      if (!owner) return send(chatId, 'Owner only.');
+      if (args.length < 2) {
+        return send(chatId, 'Usage: <code>/limit 123456789 5</code> (EUR per day)\n' +
+          'Use <code>none</code> for unlimited, <code>0</code> to block ordering.');
+      }
+      const [target, rawAmount] = args;
+      if (/^(none|unlimited)$/i.test(rawAmount)) {
+        users.setLimit(target, null);
+        await send(chatId, '✅ <code>' + esc(target) + '</code> is now unlimited.');
+        await send(target, 'ℹ️ Your daily spending limit was removed.').catch(() => {});
+        return;
+      }
+      const amount = Number(rawAmount);
+      if (!Number.isFinite(amount) || amount < 0) return send(chatId, 'Amount must be a number of EUR, e.g. <code>2.50</code>.');
+      const minor = Math.round(amount * 100);
+      users.setLimit(target, minor);
+      await send(chatId, '✅ <code>' + esc(target) + '</code> limit set to <b>' + esc(users.eur(minor)) + '</b>/day.');
+      await send(target, 'ℹ️ Your daily spending limit is now <b>' + esc(users.eur(minor)) + '</b>.').catch(() => {});
+      return;
+    }
+
+    case '/limits': {
+      if (!owner) return send(chatId, 'Owner only.');
+      const { approved, ownerIds } = users.list();
+      const lines = ['<b>Daily limits</b>', ''];
+      for (const u of approved) {
+        if (ownerIds.includes(String(u.id))) {
+          lines.push('👑 ' + userLabel(u) + ' — unlimited');
+          continue;
+        }
+        lines.push(
+          '• ' + userLabel(u) + '\n    ' +
+          esc(users.eur(users.todaySpend(u.id))) + ' spent of ' + esc(users.eur(users.getLimit(u.id)))
+        );
+      }
+      lines.push('', '<i>Default for new users: ' + esc(users.eur(users.DEFAULT_LIMIT_MINOR)) + '/day</i>');
+      return send(chatId, lines.join('\n'));
     }
 
     case '/price': {
@@ -315,6 +392,19 @@ async function handleCommand(msg) {
       const svc = await findService(term);
       if (!svc) return send(chatId, 'No service matches “' + esc(term) + '”. Try <code>/price ' + esc(term) + '</code>.');
 
+      // Reserve against the daily allowance before spending anything upstream.
+      const priceMinor = (svc.price && svc.price.amount_minor) || 0;
+      const left = users.remaining(msg.from.id);
+      if (left !== null && priceMinor > left) {
+        return send(
+          chatId,
+          '🚫 <b>Daily limit reached.</b>\n\n' +
+            esc(svc.name) + ' costs ' + esc(users.eur(priceMinor)) + ', but you have ' +
+            esc(users.eur(left)) + ' left today (limit ' + esc(users.eur(users.getLimit(msg.from.id))) + ').\n\n' +
+            '<i>Resets at 00:00 UTC. An owner can raise it with /limit.</i>'
+        );
+      }
+
       await send(chatId, '⏳ Ordering <b>' + esc(svc.name) + '</b> (' + esc(country) + ') for ' + esc(money(svc)) + '…');
 
       const { status, data } = await juicy('/orders', {
@@ -335,13 +425,16 @@ async function handleCommand(msg) {
         return send(chatId, '❌ ' + esc(data.detail || data.title || 'Order failed.'));
       }
 
-      watchOrder(data.id, chatId, svc.name + ' · ' + country);
+      users.addSpend(msg.from.id, priceMinor);
+      watchOrder(data.id, chatId, svc.name + ' · ' + country, msg.from.id, priceMinor);
 
+      const nowLeft = users.remaining(msg.from.id);
       return send(
         chatId,
         '📱 <b>' + esc(data.phone_number) + '</b>\n' +
-          esc(svc.name) + ' · ' + esc(country) + ' · <code>#' + esc(data.id) + '</code>\n\n' +
-          '<i>Waiting for the SMS — I will send the code here.</i>',
+          esc(svc.name) + ' · ' + esc(country) + ' · <code>#' + esc(data.id) + '</code>\n' +
+          (nowLeft === null ? '' : '<i>' + esc(users.eur(nowLeft)) + ' left today</i>\n') +
+          '\n<i>Waiting for the SMS — I will send the code here.</i>',
         {
           reply_markup: {
             inline_keyboard: [
@@ -380,7 +473,9 @@ async function handleCommand(msg) {
       if (status !== 200 && status !== 201) {
         return send(chatId, '❌ ' + esc(data.detail || 'Could not ' + action + '.'));
       }
+      const w = watchers.get(String(order.id));
       unwatch(order.id);
+      releaseReservation(w); // canceled before an SMS => nothing was charged
       return send(chatId, (action === 'skip' ? '⛔ Skipped' : '🚫 Canceled') + ' <code>#' + esc(order.id) + '</code>.');
     }
 
@@ -388,7 +483,7 @@ async function handleCommand(msg) {
       const { status, data } = await juicy('/orders', { query: { status: 'completed', limit: 1 } });
       const last = status === 200 ? (data.data || [])[0] : null;
       if (!last) return send(chatId, 'No completed order to reuse.');
-      return doReuse(chatId, last.id);
+      return doReuse(chatId, last.id, msg.from.id);
     }
 
     case '/history': {
@@ -413,12 +508,32 @@ async function handleCommand(msg) {
   }
 }
 
-async function doReuse(chatId, orderId) {
+async function doReuse(chatId, orderId, userId) {
+  // Reuse bills half price. The reuse response carries no price, so look the
+  // service up to know what to reserve.
+  let halfMinor = 0;
+  const prev = await juicy('/orders/' + orderId);
+  const svcName = prev.status === 200 && prev.data.service ? prev.data.service.name : null;
+  if (svcName) {
+    const svc = await findService(svcName);
+    if (svc && svc.price && svc.price.amount_minor) halfMinor = Math.ceil(svc.price.amount_minor / 2);
+  }
+
+  const left = users.remaining(userId);
+  if (left !== null && halfMinor > left) {
+    return send(
+      chatId,
+      '🚫 <b>Daily limit reached.</b>\n\nReuse costs about ' + esc(users.eur(halfMinor)) +
+        ', but you have ' + esc(users.eur(left)) + ' left today.'
+    );
+  }
+
   const { status, data } = await juicy('/orders/' + orderId + '/reuse', { method: 'POST' });
   if (status !== 200 && status !== 201) {
     return send(chatId, '❌ ' + esc(data.detail || data.title || 'Reuse failed.'));
   }
-  watchOrder(data.id, chatId, (data.service && data.service.name) || 'Reused');
+  users.addSpend(userId, halfMinor);
+  watchOrder(data.id, chatId, (data.service && data.service.name) || 'Reused', userId, halfMinor);
   return send(
     chatId,
     '♻️ Reordered <b>' + esc(data.phone_number) + '</b> · <code>#' + esc(data.id) + '</code>\n' +
@@ -438,7 +553,11 @@ async function handleCallback(cb) {
     if (action === 'approve') {
       const u = users.approve(orderId);
       await send(chatId, '✅ Approved ' + userLabel(u));
-      await send(orderId, '✅ <b>Access granted.</b>\n\nSend <code>/help</code> to see what I can do.');
+      await send(
+        orderId,
+        '✅ <b>Access granted.</b>\n\nDaily limit: <b>' + esc(users.eur(users.getLimit(orderId))) + '</b>\n\n' +
+          'Send <code>/help</code> to see what I can do.'
+      );
     } else {
       users.deny(orderId);
       await send(chatId, '⛔ Denied <code>' + esc(orderId) + '</code>');
@@ -447,14 +566,16 @@ async function handleCallback(cb) {
     return;
   }
 
-  if (action === 'reuse') return doReuse(chatId, orderId);
+  if (action === 'reuse') return doReuse(chatId, orderId, cb.from.id);
 
   if (action === 'cancel' || action === 'skip') {
     const { status, data } = await juicy('/orders/' + orderId + '/' + action, { method: 'POST' });
     if (status !== 200 && status !== 201) {
       return send(chatId, '❌ ' + esc(data.detail || 'Could not ' + action + '.'));
     }
+    const w = watchers.get(String(orderId));
     unwatch(orderId);
+    releaseReservation(w);
     return send(chatId, (action === 'skip' ? '⛔ Skipped' : '🚫 Canceled') + ' <code>#' + esc(orderId) + '</code>.');
   }
 }

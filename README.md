@@ -106,6 +106,25 @@ JuicySMS balance, so access is never open:
 
 State lives in `data/tg-users.json` (gitignored), so it survives restarts.
 
+### Spending limits
+
+Approved users spend the owner's balance, so every non-owner has a **daily cap**,
+defaulting to `TELEGRAM_DEFAULT_DAILY_LIMIT` (€5.00 if unset). Owners are never
+capped — it is their money.
+
+- Cost is **reserved when the order is placed**, so a burst of orders cannot slip
+  past the cap while the first is still pending.
+- If an order ends with **no SMS** — expired, canceled or skipped — it was never
+  charged, so the reservation is **released** back to that day's allowance.
+- `/reuse` reserves half the service price, matching how it is billed.
+- The window is the **UTC day**; spend from previous days never counts against today.
+- All arithmetic is in integer cents (`amount_minor`), never floats.
+
+Owner controls: `/limits` shows everyone's cap and today's spend; `/limit <id> <eur>`
+sets one (`none` = unlimited, `0` = blocks ordering entirely). Users see their own
+position with `/usage`, and `/balance` shows a non-owner their remaining allowance
+rather than the account's full balance.
+
 ### Commands
 
 ```
