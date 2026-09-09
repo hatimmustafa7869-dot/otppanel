@@ -163,6 +163,23 @@ const pendingBroadcasts = new Map(); // ownerId -> { text, at }
 const BROADCAST_TTL_MS = 10 * 60 * 1000;
 const BROADCAST_GAP_MS = 60; // stay well inside Telegram's ~30 msg/sec
 
+// Formatting for broadcasts, done safely: the text is HTML-escaped FIRST, so no
+// tag an owner types can ever reach Telegram as markup, and only then is a small
+// markdown subset translated into the tags Telegram allows. The markers require
+// a word boundary so that snake_case identifiers and URLs containing
+// underscores are left alone.
+const MD_RULES = [
+  [/(^|[\s(>])\*([^*\n]+?)\*(?=[\s).,!?:;]|$)/gm, '$1<b>$2</b>'],
+  [/(^|[\s(>])_([^_\n]+?)_(?=[\s).,!?:;]|$)/gm, '$1<i>$2</i>'],
+  [/(^|[\s(>])`([^`\n]+?)`(?=[\s).,!?:;]|$)/gm, '$1<code>$2</code>'],
+];
+
+function formatBroadcast(text) {
+  let out = esc(text);
+  for (const [pattern, replacement] of MD_RULES) out = out.replace(pattern, replacement);
+  return out;
+}
+
 function broadcastRecipients(excludeId) {
   const { approved } = users.list();
   return approved
@@ -184,7 +201,7 @@ async function sendBroadcast(ownerChatId, ownerId) {
   let sent = 0;
   const failed = [];
   for (const id of targets) {
-    const res = await send(id, '📢 <b>Message from the owner</b>\n\n' + esc(draft.text));
+    const res = await send(id, '📢 <b>Message from the owner</b>\n\n' + formatBroadcast(draft.text));
     if (res && res.ok) sent += 1;
     else failed.push(id);
     await new Promise((r) => setTimeout(r, BROADCAST_GAP_MS));
@@ -457,6 +474,7 @@ async function handleCommand(msg) {
       const body = text.slice(rawCmd.length).trim();
       if (!body) {
         return send(chatId, 'Usage: <code>/broadcast Your message here</code>\n\n' +
+          'Formatting: <code>*bold*</code>, <code>_italic_</code>, <code>`code`</code>\n\n' +
           '<i>You will see a preview and confirm before anything is sent.</i>');
       }
 
@@ -469,7 +487,7 @@ async function handleCommand(msg) {
         chatId,
         '📢 <b>Preview</b> — this will go to <b>' + targets.length + '</b> user' +
           (targets.length === 1 ? '' : 's') + ':\n\n' +
-          '━━━━━━━━━━\n' + esc(body) + '\n━━━━━━━━━━\n\n' +
+          '━━━━━━━━━━\n' + formatBroadcast(body) + '\n━━━━━━━━━━\n\n' +
           '<i>Broadcasts cannot be recalled.</i>',
         {
           reply_markup: {
@@ -972,4 +990,4 @@ function start() {
   return true;
 }
 
-module.exports = { handleUpdate, start, isConfigured, users, splitTermAndCountry, broadcastRecipients };
+module.exports = { handleUpdate, start, isConfigured, users, splitTermAndCountry, broadcastRecipients, formatBroadcast };
