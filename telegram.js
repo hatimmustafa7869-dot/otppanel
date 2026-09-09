@@ -369,6 +369,7 @@ const OWNER_HELP = [
   '<code>/limits</code> — everyone’s daily limit and spend',
   '<code>/limit &lt;id&gt; &lt;eur&gt;</code> — set a daily limit (<code>none</code> = unlimited)',
   '<code>/add &lt;id&gt; &lt;eur&gt;</code> — add balance on top of their daily limit',
+  '<code>/rm &lt;id&gt; &lt;eur|all&gt;</code> — remove balance',
   '<code>/whoami</code> — your Telegram id',
 ].join('\n');
 
@@ -664,6 +665,47 @@ async function handleCommand(msg) {
           ? '💳 <b>' + esc(users.eur(minor)) + ' added to your balance.</b>\n\n' +
             'Balance: <b>' + esc(users.eur(total)) + '</b>\nUse <code>/usage</code> to check it any time.'
           : 'ℹ️ Your balance was adjusted to <b>' + esc(users.eur(total)) + '</b>.'
+      ).catch(() => {});
+      return;
+    }
+
+    case '/rm': {
+      if (!owner) return send(chatId, 'Owner only.');
+      if (args.length < 2) {
+        return send(chatId, 'Usage: <code>/rm 123456789 5</code> — removes €5.00 of balance.\n' +
+          'Use <code>/rm 123456789 all</code> to clear it entirely.');
+      }
+      const [target, rawAmount] = args;
+      const before = users.getCredit(target);
+
+      if (!before) {
+        return send(chatId, '<code>' + esc(target) + '</code> has no balance to remove.');
+      }
+
+      let removed;
+      let total;
+      if (/^(all|max)$/i.test(rawAmount)) {
+        removed = before;
+        total = users.setCredit(target, 0);
+      } else {
+        const amount = Number(rawAmount);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          return send(chatId, 'Amount must be a positive number of EUR, or <code>all</code>.');
+        }
+        // Never take more than they hold, so the reported figure is truthful.
+        removed = Math.min(before, Math.round(amount * 100));
+        total = users.addCredit(target, -removed);
+      }
+
+      await send(
+        chatId,
+        '💳 Removed <b>' + esc(users.eur(removed)) + '</b> from <code>' + esc(target) + '</code>\n' +
+          'Balance: ' + esc(users.eur(before)) + ' → <b>' + esc(users.eur(total)) + '</b>'
+      );
+      await send(
+        target,
+        'ℹ️ <b>' + esc(users.eur(removed)) + '</b> was removed from your balance.\n\n' +
+          'Balance: <b>' + esc(users.eur(total)) + '</b>'
       ).catch(() => {});
       return;
     }

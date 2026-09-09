@@ -238,6 +238,7 @@ Owner-only:
 /limits                      everyone's daily limit and spend
 /limit <id> <eur>            set a daily limit (none = unlimited, 0 = blocked)
 /add <id> <eur>              add balance on top of the daily limit
+/rm <id> <eur|all>           remove balance
 ```
 
 Countries: `uk`, `usa`, `nl`, `de`, `pl`, `ph`, defaulting to `uk`. The trailing word is
