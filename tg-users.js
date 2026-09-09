@@ -90,7 +90,11 @@ function claimOwner(from) {
 
 function isApproved(id) {
   const s = load();
-  return isOwner(id) || envIds().includes(String(id)) || Boolean(s.approved[String(id)]);
+  if (isOwner(id)) return true;
+  // A ban overrides everything, including the environment allowlist — otherwise
+  // banning someone listed there would silently do nothing.
+  if (isDenied(id)) return false;
+  return envIds().includes(String(id)) || Boolean(s.approved[String(id)]);
 }
 
 function isDenied(id) {
@@ -122,15 +126,29 @@ function approve(id) {
   return s.approved[key];
 }
 
+// Bans and denials are the same state: the user is ignored entirely, so they
+// get no reply and the owners get no request.
 function deny(id) {
   const s = load();
   const key = String(id);
-  const record = s.pending[key] || { id: key };
+  if (isOwner(key)) return null; // an owner cannot be banned
+  const record = s.pending[key] || s.approved[key] || { id: key };
   delete s.pending[key];
   delete s.approved[key];
   s.denied[key] = { ...record, denied_at: new Date().toISOString() };
   save();
   return s.denied[key];
+}
+
+// Lifts a ban. The user is not re-approved — they simply become a stranger
+// again, free to send /start and have that request reach the owners.
+function unban(id) {
+  const s = load();
+  const key = String(id);
+  if (!s.denied[key]) return false;
+  delete s.denied[key];
+  save();
+  return true;
 }
 
 function revoke(id) {
@@ -307,7 +325,7 @@ function eur(minor) {
 
 module.exports = {
   load, ownerId, ownerIds, isOwner, claimOwner, isApproved, isDenied, isPending,
-  requestAccess, approve, deny, revoke, list, describe,
+  requestAccess, approve, deny, unban, revoke, list, describe,
   getLimit, setLimit, todaySpend, remaining, addSpend, refundSpend, eur,
   getCredit, addCredit, setCredit, dailyRoom, totalCredit, isWalletMode,
   DEFAULT_LIMIT_MINOR,

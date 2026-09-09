@@ -100,7 +100,10 @@ JuicySMS balance, so access is never open:
 - A **new user** who sends `/start` gets a "waiting for approval" reply, and every
   owner receives an Approve / Deny prompt with that user's name, username and id.
 - **Approved** users get a message telling them so, and can use every command.
-- **Denied** users get silence on subsequent messages, rather than a reply loop.
+- **Banned** users are ignored completely: no reply, and no approval request reaches
+  the owners. Ban with the Deny button or `/ban <id>`; lift it with `/unban <id>`,
+  which returns them to being a stranger rather than re-approving them. A ban also
+  revokes existing access and overrides `TELEGRAM_ALLOWED_IDS`. Owners cannot be banned.
 - If no owner is configured at all, the first person to `/start` claims the bot.
   Pin `TELEGRAM_OWNER_ID` afterwards so ownership can never be re-claimed.
 
@@ -168,6 +171,8 @@ Owner-only:
 /pending                     access requests waiting on you
 /users                       who has access
 /revoke <id>                 remove someone's access
+/ban <id>                    ignore them completely
+/unban <id>                  lift a ban
 /limits                      everyone's daily limit and spend
 /limit <id> <eur>            set a daily limit (none = unlimited, 0 = blocked)
 /add <id> <eur>              add balance on top of the daily limit

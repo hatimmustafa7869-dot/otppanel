@@ -310,6 +310,8 @@ const OWNER_HELP = [
   '<code>/pending</code> — access requests waiting on you',
   '<code>/users</code> — who has access',
   '<code>/revoke &lt;id&gt;</code> — remove someone’s access',
+  '<code>/ban &lt;id&gt;</code> — ignore them completely',
+  '<code>/unban &lt;id&gt;</code> — lift a ban',
   '<code>/limits</code> — everyone’s daily limit and spend',
   '<code>/limit &lt;id&gt; &lt;eur&gt;</code> — set a daily limit (<code>none</code> = unlimited)',
   '<code>/add &lt;id&gt; &lt;eur&gt;</code> — add balance on top of their daily limit',
@@ -397,10 +399,40 @@ async function handleCommand(msg) {
         pending.forEach((u) => lines.push('  • ' + userLabel(u)));
       }
       if (denied.length) {
-        lines.push('', '⛔ Denied (' + denied.length + ')');
+        lines.push('', '🔨 Banned (' + denied.length + ') — /unban to lift');
         denied.forEach((u) => lines.push('  • ' + userLabel(u)));
       }
       return send(chatId, lines.join('\n'));
+    }
+
+    case '/ban': {
+      if (!owner) return send(chatId, 'Owner only.');
+      if (!args.length) return send(chatId, 'Usage: <code>/ban 123456789</code>');
+      const target = args[0];
+      if (users.isOwner(target)) return send(chatId, 'You cannot ban an owner.');
+
+      const banned = users.deny(target);
+      if (!banned) return send(chatId, 'Could not ban <code>' + esc(target) + '</code>.');
+      // Deliberately silent towards the banned user: they should simply find
+      // that the bot no longer answers, not learn they were banned.
+      return send(
+        chatId,
+        '🔨 <b>Banned</b> <code>' + esc(target) + '</code>\n\n' +
+          '<i>They are ignored from now on — no replies, and no approval request reaches you. ' +
+          'Undo with /unban.</i>'
+      );
+    }
+
+    case '/unban': {
+      if (!owner) return send(chatId, 'Owner only.');
+      if (!args.length) return send(chatId, 'Usage: <code>/unban 123456789</code>');
+      const target = args[0];
+      if (!users.unban(target)) return send(chatId, '<code>' + esc(target) + '</code> is not banned.');
+      return send(
+        chatId,
+        '♻️ <b>Unbanned</b> <code>' + esc(target) + '</code>\n\n' +
+          '<i>They still have no access — if they send /start you will get an approval request again.</i>'
+      );
     }
 
     case '/revoke': {
