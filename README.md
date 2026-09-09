@@ -155,11 +155,18 @@ rather than the account's full balance.
 `/broadcast <text>` messages every approved user. Because a broadcast cannot be
 recalled, it previews the text and the recipient count first and only sends on
 confirmation; the draft is held in memory and expires after ten minutes. Pending and
-banned users never receive it, and the sender is skipped. Formatting uses a small markdown subset — `*bold*`, `_italic_`, `` — applied
-**after** HTML-escaping, so a message containing a tag is shown literally and cannot
-inject markup. The markers need a word boundary, leaving `snake_case` and URLs with
-underscores alone. Delivery is paced at ~60ms per message to stay inside Telegram rate limits, and the summary reports how many
-landed plus the ids that failed — usually someone who blocked the bot.
+banned users never receive it, and the sender is skipped.
+
+Formatting uses a small markdown subset — `*bold*`, `_italic_`, and backtick-wrapped
+`code` — applied **after** HTML-escaping rather than by permitting raw tags. Escaping
+first means a message containing markup is shown literally and can never reach
+Telegram as markup, so formatting costs nothing in safety. The markers need a word
+boundary, leaving `snake_case` identifiers and URLs containing underscores alone. The
+preview renders through the same formatter, so what you confirm is what recipients see.
+
+Delivery is paced at ~60ms per message to stay inside Telegram rate limits, and the
+summary reports how many landed plus the ids that failed — usually someone who
+blocked the bot.
 
 ### Commands
 
