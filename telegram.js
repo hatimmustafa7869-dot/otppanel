@@ -87,7 +87,7 @@ function saveWatchers() {
   }
 }
 
-function watchOrder(orderId, chatId, label, userId, priceMinor, split) {
+function watchOrder(orderId, chatId, label, userId, priceMinor, split, meta) {
   watchers.set(String(orderId), {
     orderId: String(orderId),
     chatId,
@@ -96,6 +96,8 @@ function watchOrder(orderId, chatId, label, userId, priceMinor, split) {
     priceMinor: Number(priceMinor) || 0,
     // How the reservation was funded, so a release reverses it exactly.
     split: split || { fromDaily: Number(priceMinor) || 0, fromCredit: 0 },
+    // Service and country, so a skip can order the same thing again.
+    meta: meta || null,
     startedAt: Date.now(),
   });
   saveWatchers();
@@ -155,8 +157,10 @@ async function tick() {
 
 // ---------- Command helpers ----------
 
-async function findService(term) {
-  const { status, data } = await juicy('/services', { query: { search: term } });
+// The country is required: /services returns `price: null` without one, and a
+// null price would otherwise be read as costing nothing.
+async function findService(term, country) {
+  const { status, data } = await juicy('/services', { query: { search: term, country } });
   if (status !== 200) return null;
   const list = data.data || [];
   if (!list.length) return null;
@@ -164,6 +168,117 @@ async function findService(term) {
   // does not resolve to "Google Chat".
   const exact = list.find((s) => s.name.toLowerCase() === term.toLowerCase());
   return exact || list[0];
+}
+
+// Splits "whatsapp usa" into a service term and a country, treating the last
+// word as a country only when it actually is one — so "/order google chat"
+// still searches for "google chat".
+function splitTermAndCountry(args, fallback = 'UK') {
+  const parts = [...args];
+  const last = (parts[parts.length - 1] || '').toLowerCase();
+  if (parts.length > 1 && COUNTRIES[last]) {
+    parts.pop();
+    return { term: parts.join(' '), country: COUNTRIES[last] };
+  }
+  return { term: parts.join(' '), country: fallback };
+}
+
+// Places an order and starts watching it. Shared by /order and by skip, which
+// re-orders automatically. Returns null on success, or a message already sent.
+async function placeOrder(chatId, userId, svc, country) {
+  const priceMinor = (svc.price && svc.price.amount_minor) || 0;
+
+  // A price of zero means the lookup did not carry one. Refuse rather than
+  // reserve nothing against the user's balance.
+  if (!priceMinor) {
+    return send(chatId, '❌ Could not determine the price for ' + esc(svc.name) + ' in ' + esc(country) + '. Order not placed.');
+  }
+
+  const left = users.remaining(userId);
+  if (left !== null && priceMinor > left) {
+    if (users.isWalletMode(userId)) {
+      return send(
+        chatId,
+        '🚫 <b>Not enough balance.</b>\n\n' +
+          esc(svc.name) + ' costs ' + esc(users.eur(priceMinor)) +
+          ', your balance is ' + esc(users.eur(left)) + '.\n\n<i>Ask an owner to add balance.</i>'
+      );
+    }
+    return send(
+      chatId,
+      '🚫 <b>Daily limit reached.</b>\n\n' +
+        esc(svc.name) + ' costs ' + esc(users.eur(priceMinor)) + ', but you have ' +
+        esc(users.eur(left)) + ' left today (limit ' + esc(users.eur(users.getLimit(userId))) + ').\n\n' +
+        '<i>Resets at 00:00 UTC. An owner can raise it with /limit.</i>'
+    );
+  }
+
+  const { status, data } = await juicy('/orders', {
+    method: 'POST',
+    body: { country, service_id: svc.id },
+  });
+
+  if (status === 409 && data.code === 'concurrent_order_limit') {
+    return send(chatId, '⚠️ You already have an open order. Use <code>/status</code> or <code>/cancel</code> first.');
+  }
+  if (status === 409 && data.code === 'out_of_stock') {
+    return send(chatId, '😕 Out of stock for ' + esc(svc.name) + ' in ' + esc(country) + '. Try another country.');
+  }
+  if (status === 402) {
+    return send(chatId, '💸 Insufficient balance on the account. Balance: ' + esc(money(data.balance)));
+  }
+  if (status !== 201 && status !== 200) {
+    return send(chatId, '❌ ' + esc(data.detail || data.title || 'Order failed.'));
+  }
+
+  const split = users.addSpend(userId, priceMinor);
+  watchOrder(data.id, chatId, svc.name + ' · ' + country, userId, priceMinor, split, {
+    serviceId: svc.id,
+    serviceName: svc.name,
+    country,
+  });
+
+  const nowLeft = users.remaining(userId);
+  await send(
+    chatId,
+    '📱 <b>' + esc(data.phone_number) + '</b>\n' +
+      esc(svc.name) + ' · ' + esc(country) + ' · <code>#' + esc(data.id) + '</code>\n' +
+      (nowLeft === null ? '' : '<i>' + esc(users.eur(nowLeft)) + ' left</i>\n') +
+      '\n<i>Waiting for the SMS — I will send the code here.</i>',
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '🚫 Cancel', callback_data: 'cancel:' + data.id },
+          { text: '⛔ Skip', callback_data: 'skip:' + data.id },
+        ]],
+      },
+    }
+  );
+  return null;
+}
+
+// Skip on the real site cancels the number, blacklists it and hands you a
+// fresh one — so do the same here rather than leaving the user with nothing.
+async function skipAndReorder(chatId, userId, orderId) {
+  const w = watchers.get(String(orderId));
+
+  const { status, data } = await juicy('/orders/' + orderId + '/skip', { method: 'POST' });
+  if (status !== 200 && status !== 201) {
+    return send(chatId, '❌ ' + esc(data.detail || 'Could not skip.'));
+  }
+  unwatch(orderId);
+  releaseReservation(w); // skipped before an SMS => never charged
+
+  const meta = w && w.meta;
+  if (!meta || !meta.serviceId) {
+    return send(chatId, '⛔ Skipped <code>#' + esc(orderId) + '</code>.\n<i>Order again with /order.</i>');
+  }
+
+  await send(chatId, '⛔ Skipped <code>#' + esc(orderId) + '</code> — getting you another number…');
+
+  const svc = await findService(meta.serviceName, meta.country);
+  if (!svc) return send(chatId, '❌ Could not look up ' + esc(meta.serviceName) + ' again.');
+  return placeOrder(chatId, userId, svc, meta.country);
 }
 
 async function openOrder() {
@@ -178,9 +293,9 @@ const HELP = [
   '<code>/order &lt;service&gt; [country]</code> — order a number (default UK)',
   '<code>/status</code> — current open order and its code',
   '<code>/cancel</code> — cancel the open order',
-  '<code>/skip</code> — cancel and blacklist the number',
+  '<code>/skip</code> — blacklist this number and get another',
   '<code>/reuse</code> — reorder the last number at half price',
-  '<code>/price &lt;service&gt;</code> — look up a price',
+  '<code>/price &lt;service&gt; [country]</code> — look up a price',
   '<code>/balance</code> — balance / your remaining allowance',
   '<code>/usage</code> — what you have spent today',
   '<code>/history</code> — recent orders',
@@ -487,103 +602,40 @@ async function handleCommand(msg) {
     }
 
     case '/price': {
-      if (!args.length) return send(chatId, 'Usage: <code>/price whatsapp</code>');
-      const term = args.join(' ');
-      const { status, data } = await juicy('/services', { query: { search: term } });
+      if (!args.length) return send(chatId, 'Usage: <code>/price whatsapp [country]</code>');
+
+      // Prices are per country; without one the API returns price: null.
+      const { term, country } = splitTermAndCountry(args);
+      const { status, data } = await juicy('/services', { query: { search: term, country } });
       if (status !== 200) return send(chatId, '❌ ' + esc(data.detail || 'Lookup failed.'));
-      const list = (data.data || []).slice(0, 12);
-      if (!list.length) return send(chatId, 'No service matches “' + esc(term) + '”.');
+
+      const list = (data.data || []).slice(0, 15);
+      if (!list.length) {
+        return send(chatId, 'No service matches “' + esc(term) + '” in ' + esc(country) + '.');
+      }
       return send(
         chatId,
-        '<b>Prices for “' + esc(term) + '”</b>\n' +
-          list.map((s) => '• ' + esc(s.name) + ' — ' + esc(money(s))).join('\n')
+        '<b>' + esc(term || 'Services') + ' · ' + esc(country) + '</b>\n' +
+          list.map((s) => '• ' + esc(s.name) + ' — <b>' + esc(money(s)) + '</b>').join('\n') +
+          (data.count && data.count > list.length
+            ? '\n\n<i>' + esc(data.count - list.length) + ' more — narrow the search.</i>'
+            : '') +
+          '\n\n<i>Other countries: uk, usa, nl, de, pl, ph</i>'
       );
     }
 
     case '/order': {
       if (!args.length) return send(chatId, 'Usage: <code>/order whatsapp uk</code>');
-
-      // Trailing token is a country only if it is a known one; otherwise the
-      // whole argument list is the service name ("google chat").
-      let country = 'UK';
-      let parts = [...args];
-      const last = parts[parts.length - 1].toLowerCase();
-      if (parts.length > 1 && COUNTRIES[last]) {
-        country = COUNTRIES[last];
-        parts.pop();
-      } else if (parts.length === 1 && COUNTRIES[last]) {
+      if (args.length === 1 && COUNTRIES[args[0].toLowerCase()]) {
         return send(chatId, 'That looks like a country. Usage: <code>/order whatsapp uk</code>');
       }
-      const term = parts.join(' ');
 
-      const svc = await findService(term);
+      const { term, country } = splitTermAndCountry(args);
+      const svc = await findService(term, country);
       if (!svc) return send(chatId, 'No service matches “' + esc(term) + '”. Try <code>/price ' + esc(term) + '</code>.');
 
-      // Reserve against the daily allowance before spending anything upstream.
-      const priceMinor = (svc.price && svc.price.amount_minor) || 0;
-      const left = users.remaining(msg.from.id);
-      if (left !== null && priceMinor > left) {
-        // With no daily cap the shortfall is simply a lack of funds, and
-        // telling the user to wait for a reset that never comes would be wrong.
-        if (users.isWalletMode(msg.from.id)) {
-          return send(
-            chatId,
-            '🚫 <b>Not enough balance.</b>\n\n' +
-              esc(svc.name) + ' costs ' + esc(users.eur(priceMinor)) +
-              ', your balance is ' + esc(users.eur(left)) + '.\n\n' +
-              '<i>Ask an owner to add balance.</i>'
-          );
-        }
-        return send(
-          chatId,
-          '🚫 <b>Daily limit reached.</b>\n\n' +
-            esc(svc.name) + ' costs ' + esc(users.eur(priceMinor)) + ', but you have ' +
-            esc(users.eur(left)) + ' left today (limit ' + esc(users.eur(users.getLimit(msg.from.id))) + ').\n\n' +
-            '<i>Resets at 00:00 UTC. An owner can raise it with /limit.</i>'
-        );
-      }
-
       await send(chatId, '⏳ Ordering <b>' + esc(svc.name) + '</b> (' + esc(country) + ') for ' + esc(money(svc)) + '…');
-
-      const { status, data } = await juicy('/orders', {
-        method: 'POST',
-        body: { country, service_id: svc.id },
-      });
-
-      if (status === 409 && data.code === 'concurrent_order_limit') {
-        return send(chatId, '⚠️ You already have an open order. Use <code>/status</code> or <code>/cancel</code> first.');
-      }
-      if (status === 409 && data.code === 'out_of_stock') {
-        return send(chatId, '😕 Out of stock for ' + esc(svc.name) + ' in ' + esc(country) + '. Try another country.');
-      }
-      if (status === 402) {
-        return send(chatId, '💸 Insufficient balance. Balance: ' + esc(money(data.balance)));
-      }
-      if (status !== 201 && status !== 200) {
-        return send(chatId, '❌ ' + esc(data.detail || data.title || 'Order failed.'));
-      }
-
-      const split = users.addSpend(msg.from.id, priceMinor);
-      watchOrder(data.id, chatId, svc.name + ' · ' + country, msg.from.id, priceMinor, split);
-
-      const nowLeft = users.remaining(msg.from.id);
-      return send(
-        chatId,
-        '📱 <b>' + esc(data.phone_number) + '</b>\n' +
-          esc(svc.name) + ' · ' + esc(country) + ' · <code>#' + esc(data.id) + '</code>\n' +
-          (nowLeft === null ? '' : '<i>' + esc(users.eur(nowLeft)) + ' left today</i>\n') +
-          '\n<i>Waiting for the SMS — I will send the code here.</i>',
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '🚫 Cancel', callback_data: 'cancel:' + data.id },
-                { text: '⛔ Skip', callback_data: 'skip:' + data.id },
-              ],
-            ],
-          },
-        }
-      );
+      return placeOrder(chatId, msg.from.id, svc, country);
     }
 
     case '/status': {
@@ -602,11 +654,16 @@ async function handleCommand(msg) {
       );
     }
 
-    case '/cancel':
     case '/skip': {
       const order = await openOrder();
-      if (!order) return send(chatId, 'No open order to ' + cmd.slice(1) + '.');
-      const action = cmd === '/skip' ? 'skip' : 'cancel';
+      if (!order) return send(chatId, 'No open order to skip.');
+      return skipAndReorder(chatId, msg.from.id, order.id);
+    }
+
+    case '/cancel': {
+      const order = await openOrder();
+      if (!order) return send(chatId, 'No open order to cancel.');
+      const action = 'cancel';
       const { status, data } = await juicy('/orders/' + order.id + '/' + action, { method: 'POST' });
       if (status !== 200 && status !== 201) {
         return send(chatId, '❌ ' + esc(data.detail || 'Could not ' + action + '.'));
@@ -715,15 +772,17 @@ async function handleCallback(cb) {
 
   if (action === 'reuse') return doReuse(chatId, orderId, cb.from.id);
 
-  if (action === 'cancel' || action === 'skip') {
-    const { status, data } = await juicy('/orders/' + orderId + '/' + action, { method: 'POST' });
+  if (action === 'skip') return skipAndReorder(chatId, cb.from.id, orderId);
+
+  if (action === 'cancel') {
+    const { status, data } = await juicy('/orders/' + orderId + '/cancel', { method: 'POST' });
     if (status !== 200 && status !== 201) {
-      return send(chatId, '❌ ' + esc(data.detail || 'Could not ' + action + '.'));
+      return send(chatId, '❌ ' + esc(data.detail || 'Could not cancel.'));
     }
     const w = watchers.get(String(orderId));
     unwatch(orderId);
     releaseReservation(w);
-    return send(chatId, (action === 'skip' ? '⛔ Skipped' : '🚫 Canceled') + ' <code>#' + esc(orderId) + '</code>.');
+    return send(chatId, '🚫 Canceled <code>#' + esc(orderId) + '</code>.');
   }
 }
 
@@ -795,4 +854,4 @@ function start() {
   return true;
 }
 
-module.exports = { handleUpdate, start, isConfigured, users };
+module.exports = { handleUpdate, start, isConfigured, users, splitTermAndCountry };

@@ -153,9 +153,9 @@ rather than the account's full balance.
 /order <service> [country]   order a number, default UK
 /status                      current open order and its code
 /cancel                      cancel the open order
-/skip                        cancel and blacklist the number
+/skip                        blacklist this number and get another
 /reuse                       reorder the last number at half price
-/price <service>             look up a price
+/price <service> [country]   look up a price
 /balance                     balance, or your remaining allowance
 /usage                       what you have spent today
 /history                     recent orders
@@ -173,8 +173,15 @@ Owner-only:
 /add <id> <eur>              add balance on top of the daily limit
 ```
 
-Countries: `uk`, `usa`, `nl`, `de`, `pl`, `ph`. The trailing word is treated as a
-country only when it is one of those, so `/order google chat` still works.
+Countries: `uk`, `usa`, `nl`, `de`, `pl`, `ph`, defaulting to `uk`. The trailing word is
+treated as a country only when it is one of those, so `/order google chat` still works.
+
+A country is always sent to `/services`, because the API returns `price: null` without
+one — and a null price would be read as free. An order whose price cannot be
+determined is refused rather than placed for nothing.
+
+`/skip` matches the website: it blacklists the current number, releases its
+reservation, and immediately orders another of the same service and country.
 
 When an order is placed, the bot watches it and pushes the code into the chat the
 moment the SMS lands. Watchers are persisted to `data/watchers.json`, so a redeploy
