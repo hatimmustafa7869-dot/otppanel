@@ -186,6 +186,28 @@ app.get('/api/session', (req, res) => {
   });
 });
 
+// ---------- Telegram webhook ----------
+// Must sit before the login guard: Telegram cannot hold a session. It is
+// protected instead by an unguessable path segment plus Telegram's own secret
+// header, and the bot itself only obeys allowlisted user ids.
+const telegram = require('./telegram');
+const TG_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || '';
+
+app.post('/telegram/webhook/:secret', (req, res) => {
+  if (!TG_WEBHOOK_SECRET || req.params.secret !== TG_WEBHOOK_SECRET) {
+    return res.status(404).json({ code: 'not_found' });
+  }
+  const header = req.get('X-Telegram-Bot-Api-Secret-Token');
+  if (header && header !== TG_WEBHOOK_SECRET) {
+    return res.status(403).json({ code: 'bad_secret' });
+  }
+
+  // Acknowledge immediately — Telegram retries anything slower than ~60s, and
+  // ordering a number can take longer than that.
+  res.json({ ok: true });
+  telegram.handleUpdate(req.body).catch((err) => console.error('telegram update failed:', err));
+});
+
 // The guard itself. Registered before every route that follows, so static
 // assets and API routes alike are unreachable without a session.
 app.use((req, res, next) => {
@@ -197,55 +219,8 @@ app.use((req, res, next) => {
 });
 
 // ---------- JuicySMS client ----------
-// The API key never leaves the server; the browser only ever talks to /api/*.
-async function juicy(endpoint, { method = 'GET', body, query } = {}) {
-  const url = new URL(API_BASE + endpoint);
-  for (const [key, value] of Object.entries(query || {})) {
-    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
-  }
-
-  const init = {
-    method,
-    headers: {
-      Authorization: 'Bearer ' + API_KEY,
-      Accept: 'application/json',
-    },
-  };
-  if (body !== undefined) {
-    init.headers['Content-Type'] = 'application/json';
-    init.body = JSON.stringify(body);
-  }
-
-  let res;
-  try {
-    res = await fetch(url, init);
-  } catch (err) {
-    return {
-      status: 502,
-      data: {
-        code: 'upstream_unreachable',
-        title: 'Could not reach JuicySMS',
-        detail: err.message,
-        retryable: true,
-      },
-    };
-  }
-
-  const text = await res.text();
-  let data;
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = { code: 'bad_gateway', title: 'Unexpected response', detail: text.slice(0, 300) };
-  }
-
-  const rate = {
-    limit: res.headers.get('x-ratelimit-limit'),
-    remaining: res.headers.get('x-ratelimit-remaining'),
-    reset: res.headers.get('x-ratelimit-reset'),
-  };
-  return { status: res.status, data, rate };
-}
+// Shared with the Telegram bot; the API key never leaves the server.
+const { juicy } = require('./juicysms');
 
 // Forwards upstream status codes untouched so the UI can react to
 // out_of_stock / insufficient_balance / rate_limited by code.
@@ -442,6 +417,15 @@ app.use((req, res) => {
 
 app.listen(PORT, () => {
   console.log('OTP panel running on http://localhost:' + PORT);
+  if (telegram.start()) {
+    const owners = telegram.users.ownerIds();
+    console.log(
+      'Telegram bot: ENABLED — owner(s): ' + (owners.length ? owners.join(', ') : 'unclaimed (first /start claims it)')
+    );
+    if (!TG_WEBHOOK_SECRET) {
+      console.warn('TELEGRAM_WEBHOOK_SECRET is not set — the webhook route is disabled.');
+    }
+  }
   if (AUTH_ENABLED) {
     console.log('Login gate: ENABLED (user "' + PANEL_USER + '")');
     if (!process.env.SESSION_SECRET) {

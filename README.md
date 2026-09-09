@@ -84,6 +84,75 @@ Upstream status codes and RFC 9457 problem bodies are passed through untouched, 
 can react to `out_of_stock`, `insufficient_balance`, `concurrent_order_limit`, and
 `rate_limited` by code.
 
+## Telegram bot
+
+Order numbers and receive codes from Telegram. Runs as a **webhook**, not long
+polling — the panel is already on public HTTPS, and shared hosting is a poor place
+to keep a polling loop alive.
+
+### Access is request-and-approve
+
+The bot's username is discoverable, and every approved user spends the owner's
+JuicySMS balance, so access is never open:
+
+- **Owners** are listed in `TELEGRAM_OWNER_ID` (comma-separated). They can approve,
+  deny and revoke, and cannot be locked out from chat.
+- A **new user** who sends `/start` gets a "waiting for approval" reply, and every
+  owner receives an Approve / Deny prompt with that user's name, username and id.
+- **Approved** users get a message telling them so, and can use every command.
+- **Denied** users get silence on subsequent messages, rather than a reply loop.
+- If no owner is configured at all, the first person to `/start` claims the bot.
+  Pin `TELEGRAM_OWNER_ID` afterwards so ownership can never be re-claimed.
+
+State lives in `data/tg-users.json` (gitignored), so it survives restarts.
+
+### Commands
+
+```
+/order <service> [country]   order a number, default UK
+/status                      current open order and its code
+/cancel                      cancel the open order
+/skip                        cancel and blacklist the number
+/reuse                       reorder the last number at half price
+/price <service>             look up a price
+/balance                     account balance
+/history                     recent orders
+/whoami                      your Telegram id
+```
+
+Owner-only: `/pending`, `/users`, `/revoke <id>`.
+
+Countries: `uk`, `usa`, `nl`, `de`, `pl`, `ph`. The trailing word is treated as a
+country only when it is one of those, so `/order google chat` still works.
+
+When an order is placed, the bot watches it and pushes the code into the chat the
+moment the SMS lands. Watchers are persisted to `data/watchers.json`, so a redeploy
+mid-order does not silently drop it.
+
+### Setup
+
+```
+TELEGRAM_BOT_TOKEN=123456:ABC...
+TELEGRAM_OWNER_ID=2051992452,8897271932
+TELEGRAM_WEBHOOK_SECRET=<48 hex chars>
+PUBLIC_URL=https://your-panel-domain
+```
+
+Then register the webhook with Telegram:
+
+```bash
+npm run telegram:set
+```
+
+`npm run telegram:status` shows the current webhook and any delivery errors;
+`npm run telegram:delete` unregisters it. The token is read from `.env`, so it never
+has to be typed on a command line.
+
+The webhook route sits **before** the login guard, since Telegram cannot hold a
+session. It is protected by an unguessable path segment plus Telegram's
+`X-Telegram-Bot-Api-Secret-Token` header, and the bot itself ignores anyone who is
+not approved.
+
 ## Currency
 
 JuicySMS prices and charges strictly in **EUR** and never converts. The panel shows an

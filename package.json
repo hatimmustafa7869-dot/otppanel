@@ -6,7 +6,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "telegram:status": "node scripts/telegram-setup.js status",
+    "telegram:set": "node scripts/telegram-setup.js set",
+    "telegram:delete": "node scripts/telegram-setup.js delete"
   },
   "engines": {
     "node": ">=18"
