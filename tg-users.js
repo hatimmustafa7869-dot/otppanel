@@ -9,8 +9,12 @@ const STORE_KEY = 'tg-users';
 
 const empty = {
   ownerId: null, approved: {}, pending: {}, denied: {},
-  limits: {}, spend: {}, credits: {},
+  limits: {}, spend: {}, credits: {}, stats: null,
 };
+
+function blankStats() {
+  return { orders: 0, charged: 0, spentMinor: 0, byUser: {}, since: new Date().toISOString() };
+}
 let store = null;
 
 function blank() {
@@ -26,6 +30,8 @@ function normalise(raw) {
   s.limits = s.limits || {};
   s.spend = s.spend || {};
   s.credits = s.credits || {};
+  s.stats = s.stats || blankStats();
+  s.stats.byUser = s.stats.byUser || {};
   return s;
 }
 
@@ -326,6 +332,45 @@ function refundSpend(id, split) {
   return remaining(id);
 }
 
+// ---------- Lifetime statistics ----------
+// Spending cannot be reconstructed from order history: the API's order objects
+// carry no price at all. So it is recorded as it happens — an order when it is
+// placed, and a charge only when the SMS actually arrives, since an order that
+// never delivers is never billed.
+
+function userStat(id) {
+  const s = load();
+  const key = String(id);
+  if (!s.stats.byUser[key]) s.stats.byUser[key] = { orders: 0, charged: 0, spentMinor: 0 };
+  return s.stats.byUser[key];
+}
+
+function recordOrder(id) {
+  const s = load();
+  s.stats.orders += 1;
+  userStat(id).orders += 1;
+  save();
+}
+
+function recordCharge(id, minor) {
+  const amount = Math.max(0, Math.round(Number(minor) || 0));
+  const s = load();
+  s.stats.charged += 1;
+  s.stats.spentMinor += amount;
+  const u = userStat(id);
+  u.charged += 1;
+  u.spentMinor += amount;
+  save();
+}
+
+function stats() {
+  const s = load();
+  return {
+    ...s.stats,
+    byUser: { ...s.stats.byUser },
+  };
+}
+
 function eur(minor) {
   if (minor === null || minor === undefined) return 'unlimited';
   return '€' + (Number(minor) / 100).toFixed(2);
@@ -336,5 +381,6 @@ module.exports = {
   requestAccess, approve, deny, unban, revoke, list, describe,
   getLimit, setLimit, todaySpend, remaining, addSpend, refundSpend, eur,
   getCredit, addCredit, setCredit, dailyRoom, totalCredit, isWalletMode,
+  recordOrder, recordCharge, stats,
   DEFAULT_LIMIT_MINOR,
 };

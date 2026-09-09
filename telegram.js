@@ -54,6 +54,12 @@ function send(chatId, text, extra = {}) {
   });
 }
 
+function fmtDate(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return 'the start';
+  return d.toISOString().slice(0, 10);
+}
+
 // Telegram renders HTML, so anything interpolated from an SMS must be escaped.
 function esc(s) {
   return String(s === undefined || s === null ? '' : s)
@@ -125,6 +131,9 @@ async function tick() {
     if (messages.length) {
       const code = codeOf(messages[0]);
       unwatch(w.orderId);
+      // The SMS arrived, so this order was actually billed — the only point at
+      // which a reservation becomes real spending.
+      if (w.userId) users.recordCharge(w.userId, w.priceMinor);
       await send(
         w.chatId,
         '✅ <b>Code received</b>' +
@@ -285,6 +294,7 @@ async function placeOrder(chatId, userId, svc, country) {
   }
 
   const split = users.addSpend(userId, priceMinor);
+  users.recordOrder(userId);
   watchOrder(data.id, chatId, svc.name + ' · ' + country, userId, priceMinor, split, {
     serviceId: svc.id,
     serviceName: svc.name,
@@ -351,6 +361,7 @@ const HELP = [
   '<code>/price &lt;service&gt; [country]</code> — look up a price',
   '<code>/balance</code> — balance / your remaining allowance',
   '<code>/usage</code> — what you have spent today',
+  '<code>/stats</code> — totals for orders and spending',
   '<code>/history</code> — recent orders',
   '',
   'Countries: uk, usa, nl, de, pl, ph',
@@ -557,6 +568,57 @@ async function handleCommand(msg) {
       const { status, data } = await juicy('/account');
       if (status !== 200) return send(chatId, '❌ ' + esc(data.detail || data.title || 'Could not read the account.'));
       return send(chatId, '💰 Balance: <b>' + esc(money(data.balance)) + '</b>');
+    }
+
+    case '/stats': {
+      const s = users.stats();
+      const since = s.since ? fmtDate(s.since) : 'the start';
+
+      // Non-owners see only their own numbers.
+      if (!owner) {
+        const mine = s.byUser[String(msg.from.id)] || { orders: 0, charged: 0, spentMinor: 0 };
+        return send(
+          chatId,
+          '📊 <b>Your stats</b>\n\n' +
+            'Numbers ordered: <b>' + mine.orders + '</b>\n' +
+            'Codes received: <b>' + mine.charged + '</b>\n' +
+            'Total spent: <b>' + esc(users.eur(mine.spentMinor)) + '</b>\n' +
+            'Balance left: <b>' + esc(users.eur(users.remaining(msg.from.id))) + '</b>'
+        );
+      }
+
+      const rate = s.orders ? Math.round((s.charged / s.orders) * 100) : 0;
+      const lines = [
+        '📊 <b>Stats</b> <i>since ' + esc(since) + '</i>',
+        '',
+        'Numbers ordered: <b>' + s.orders + '</b>',
+        'Codes received: <b>' + s.charged + '</b> (' + rate + '% delivered)',
+        'Total spent: <b>' + esc(users.eur(s.spentMinor)) + '</b>',
+      ];
+
+      const entries = Object.entries(s.byUser)
+        .filter(([, v]) => v.orders || v.spentMinor)
+        .sort((a, b) => b[1].spentMinor - a[1].spentMinor);
+
+      if (entries.length) {
+        lines.push('', '<b>By user</b>');
+        for (const [id, v] of entries) {
+          lines.push(
+            '• <code>' + esc(id) + '</code> — ' + v.charged + '/' + v.orders + ' delivered · ' +
+            '<b>' + esc(users.eur(v.spentMinor)) + '</b>'
+          );
+        }
+      }
+
+      const acct = await juicy('/account');
+      if (acct.status === 200) {
+        lines.push('', 'Account balance: <b>' + esc(money(acct.data.balance)) + '</b>');
+      }
+
+      // Orders placed in the web panel never pass through the bot, so say so
+      // rather than presenting these as the account's complete history.
+      lines.push('', '<i>Bot orders only — the web panel is not counted.</i>');
+      return send(chatId, lines.join('\n'));
     }
 
     case '/usage': {

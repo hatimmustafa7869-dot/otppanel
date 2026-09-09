@@ -193,6 +193,21 @@ sets one (`none` = unlimited, `0` = blocks ordering entirely). Users see their o
 position with `/usage`, and `/balance` shows a non-owner their remaining allowance
 rather than the account's full balance.
 
+### Statistics
+
+`/stats` reports numbers ordered, codes received, the delivery rate and total spend.
+Owners also see a per-user breakdown and the live account balance; everyone else sees
+only their own figures.
+
+Spending cannot be reconstructed from order history — the API returns order objects
+with **no price field at all** — so it is recorded as it happens: an order when it is
+placed, and a charge only when the SMS actually arrives, since an order that never
+delivers is never billed. That means the delivery rate is meaningful and the spend
+total matches what was really charged.
+
+Only orders placed through the bot are counted; the web panel does not pass through
+it, and `/stats` says so rather than implying it is the account’s full history.
+
 ### Broadcast
 
 `/broadcast <text>` messages every approved user. Because a broadcast cannot be
@@ -222,6 +237,7 @@ blocked the bot.
 /price <service> [country]   look up a price
 /balance                     balance, or your remaining allowance
 /usage                       what you have spent today
+/stats                       totals for orders and spending
 /history                     recent orders
 /whoami                      your Telegram id
 ```
