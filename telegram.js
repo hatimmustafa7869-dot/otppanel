@@ -155,6 +155,52 @@ async function tick() {
   }
 }
 
+// ---------- Broadcast ----------
+// A broadcast cannot be recalled, so the text is previewed and confirmed before
+// it goes anywhere. Pending drafts live in memory only and expire.
+
+const pendingBroadcasts = new Map(); // ownerId -> { text, at }
+const BROADCAST_TTL_MS = 10 * 60 * 1000;
+const BROADCAST_GAP_MS = 60; // stay well inside Telegram's ~30 msg/sec
+
+function broadcastRecipients(excludeId) {
+  const { approved } = users.list();
+  return approved
+    .map((u) => String(u.id))
+    .filter((id) => id !== String(excludeId) && !users.isDenied(id));
+}
+
+async function sendBroadcast(ownerChatId, ownerId) {
+  const draft = pendingBroadcasts.get(String(ownerId));
+  pendingBroadcasts.delete(String(ownerId));
+
+  if (!draft || Date.now() - draft.at > BROADCAST_TTL_MS) {
+    return send(ownerChatId, '⌛ That draft expired. Send <code>/broadcast</code> again.');
+  }
+
+  const targets = broadcastRecipients(ownerId);
+  if (!targets.length) return send(ownerChatId, 'No approved users to send to.');
+
+  let sent = 0;
+  const failed = [];
+  for (const id of targets) {
+    const res = await send(id, '📢 <b>Message from the owner</b>\n\n' + esc(draft.text));
+    if (res && res.ok) sent += 1;
+    else failed.push(id);
+    await new Promise((r) => setTimeout(r, BROADCAST_GAP_MS));
+  }
+
+  return send(
+    ownerChatId,
+    '📢 <b>Broadcast sent</b>\n\n' +
+      'Delivered: <b>' + sent + '</b> of ' + targets.length +
+      (failed.length
+        ? '\nFailed: ' + failed.length + ' — <i>' + failed.map((f) => esc(f)).join(', ') +
+          '</i>\n<i>Usually means they blocked the bot or never opened a chat with it.</i>'
+        : '')
+  );
+}
+
 // ---------- Command helpers ----------
 
 // The country is required: /services returns `price: null` without one, and a
@@ -310,6 +356,7 @@ const OWNER_HELP = [
   '<code>/pending</code> — access requests waiting on you',
   '<code>/users</code> — who has access',
   '<code>/revoke &lt;id&gt;</code> — remove someone’s access',
+  '<code>/broadcast &lt;text&gt;</code> — message every approved user',
   '<code>/ban &lt;id&gt;</code> — ignore them completely',
   '<code>/unban &lt;id&gt;</code> — lift a ban',
   '<code>/limits</code> — everyone’s daily limit and spend',
@@ -403,6 +450,36 @@ async function handleCommand(msg) {
         denied.forEach((u) => lines.push('  • ' + userLabel(u)));
       }
       return send(chatId, lines.join('\n'));
+    }
+
+    case '/broadcast': {
+      if (!owner) return send(chatId, 'Owner only.');
+      const body = text.slice(rawCmd.length).trim();
+      if (!body) {
+        return send(chatId, 'Usage: <code>/broadcast Your message here</code>\n\n' +
+          '<i>You will see a preview and confirm before anything is sent.</i>');
+      }
+
+      const targets = broadcastRecipients(msg.from.id);
+      if (!targets.length) return send(chatId, 'No approved users to send to.');
+
+      pendingBroadcasts.set(String(msg.from.id), { text: body, at: Date.now() });
+
+      return send(
+        chatId,
+        '📢 <b>Preview</b> — this will go to <b>' + targets.length + '</b> user' +
+          (targets.length === 1 ? '' : 's') + ':\n\n' +
+          '━━━━━━━━━━\n' + esc(body) + '\n━━━━━━━━━━\n\n' +
+          '<i>Broadcasts cannot be recalled.</i>',
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '📢 Send to ' + targets.length, callback_data: 'bcast:send' },
+              { text: '✖️ Cancel', callback_data: 'bcast:cancel' },
+            ]],
+          },
+        }
+      );
     }
 
     case '/ban': {
@@ -804,6 +881,15 @@ async function handleCallback(cb) {
 
   if (action === 'reuse') return doReuse(chatId, orderId, cb.from.id);
 
+  if (action === 'bcast') {
+    if (!users.isOwner(cb.from.id)) return send(chatId, 'Owner only.');
+    if (orderId === 'cancel') {
+      pendingBroadcasts.delete(String(cb.from.id));
+      return send(chatId, '✖️ Broadcast cancelled — nothing was sent.');
+    }
+    return sendBroadcast(chatId, cb.from.id);
+  }
+
   if (action === 'skip') return skipAndReorder(chatId, cb.from.id, orderId);
 
   if (action === 'cancel') {
@@ -886,4 +972,4 @@ function start() {
   return true;
 }
 
-module.exports = { handleUpdate, start, isConfigured, users, splitTermAndCountry };
+module.exports = { handleUpdate, start, isConfigured, users, splitTermAndCountry, broadcastRecipients };

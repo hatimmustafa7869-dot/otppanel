@@ -150,6 +150,15 @@ sets one (`none` = unlimited, `0` = blocks ordering entirely). Users see their o
 position with `/usage`, and `/balance` shows a non-owner their remaining allowance
 rather than the account's full balance.
 
+### Broadcast
+
+`/broadcast <text>` messages every approved user. Because a broadcast cannot be
+recalled, it previews the text and the recipient count first and only sends on
+confirmation; the draft is held in memory and expires after ten minutes. Pending and
+banned users never receive it, and the sender is skipped. Delivery is paced at ~60ms
+per message to stay inside Telegram rate limits, and the summary reports how many
+landed plus the ids that failed — usually someone who blocked the bot.
+
 ### Commands
 
 ```
@@ -171,6 +180,7 @@ Owner-only:
 /pending                     access requests waiting on you
 /users                       who has access
 /revoke <id>                 remove someone's access
+/broadcast <text>            message every approved user
 /ban <id>                    ignore them completely
 /unban <id>                  lift a ban
 /limits                      everyone's daily limit and spend
