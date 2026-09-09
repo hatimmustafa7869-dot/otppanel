@@ -169,6 +169,16 @@ app.post('/logout', (req, res) => {
   });
 });
 
+// Public on purpose: it is the only way to confirm which commit a host is
+// actually running without signing in. Exposes a version string and nothing else.
+const APP_VERSION = require('./package.json').version;
+const BUILD_TAG = 'auto-deploy-check-1';
+const STARTED_AT = new Date().toISOString();
+
+app.get('/api/version', (req, res) => {
+  res.json({ version: APP_VERSION, build: BUILD_TAG, started_at: STARTED_AT });
+});
+
 app.get('/api/session', (req, res) => {
   res.json({
     auth_enabled: AUTH_ENABLED,
