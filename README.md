@@ -95,7 +95,13 @@ Two backends, chosen by configuration:
 
 **MySQL (recommended).** Create a database in hPanel under Databases, then set:
 
-
+```
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=your_db_user
+MYSQL_PASSWORD=your_db_password
+MYSQL_DATABASE=your_db_name
+```
 
 The table is created automatically on first boot, and any existing `./data` files
 are imported once if the database is empty.
@@ -137,7 +143,8 @@ JuicySMS balance, so access is never open:
 - If no owner is configured at all, the first person to `/start` claims the bot.
   Pin `TELEGRAM_OWNER_ID` afterwards so ownership can never be re-claimed.
 
-State lives in `data/tg-users.json` (gitignored), so it survives restarts.
+Access state is persisted through the storage layer above — put it in MySQL, or a
+deploy will reset every approval.
 
 ### Spending limits
 
