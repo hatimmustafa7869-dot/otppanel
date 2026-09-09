@@ -30,6 +30,7 @@ const useMysql = Boolean(MYSQL_CONFIG.host && MYSQL_CONFIG.user && MYSQL_CONFIG.
 
 let pool = null;
 let ready = false;
+let durable = false;
 const pendingWrites = new Map(); // key -> timer, so bursts collapse into one write
 const WRITE_DEBOUNCE_MS = 250;
 
@@ -58,13 +59,44 @@ function writeFileKey(key, value) {
   }
 }
 
+// True when state will actually outlive a deploy. A folder inside the
+// application directory is replaced wholesale by each deploy, which is exactly
+// how approvals were being lost.
+function isDurableDir(dir) {
+  const rel = path.relative(__dirname, path.resolve(dir));
+  return rel.startsWith('..') || path.isAbsolute(rel);
+}
+
 async function init() {
   if (!useMysql) {
+    const dir = path.resolve(DATA_DIR);
+    const explicit = Boolean(process.env.DATA_DIR);
+
+    // Prove the directory is actually writable now, rather than discovering it
+    // at the moment someone is approved and the write silently fails.
     try {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    } catch { /* created lazily on first write */ }
+      fs.mkdirSync(dir, { recursive: true });
+      const probe = path.join(dir, '.write-test');
+      fs.writeFileSync(probe, String(Date.now()));
+      fs.unlinkSync(probe);
+    } catch (err) {
+      if (explicit) {
+        throw new Error('DATA_DIR "' + dir + '" is not writable: ' + err.message);
+      }
+      console.error('store: ' + dir + ' is not writable: ' + err.message);
+    }
+
+    durable = isDurableDir(dir);
+    if (!durable) {
+      console.warn('');
+      console.warn('  WARNING: state is stored in ' + dir + ', inside the app folder.');
+      console.warn('  A deploy replaces that folder, so approvals and balances will be LOST.');
+      console.warn('  Set DATA_DIR to a path outside the deployed directory.');
+      console.warn('');
+    }
+
     ready = true;
-    return 'file:' + DATA_DIR;
+    return 'file:' + dir + (durable ? ' (durable)' : ' (EPHEMERAL — wiped by deploys)');
   }
 
   const mysql = require('mysql2/promise');
@@ -93,6 +125,7 @@ async function init() {
           ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
       );
       ready = true;
+      durable = true;
       return 'mysql:' + MYSQL_CONFIG.database + '@' + MYSQL_CONFIG.host;
     } catch (err) {
       lastErr = err;
@@ -171,4 +204,12 @@ async function migrateFromFiles(keys) {
   return migrated;
 }
 
-module.exports = { init, read, write, writeNow, flush, migrateFromFiles, useMysql, isReady: () => ready };
+// Kind and durability only — never the path, since this is surfaced publicly.
+function status() {
+  return { backend: useMysql ? 'mysql' : 'file', durable };
+}
+
+module.exports = {
+  init, read, write, writeNow, flush, migrateFromFiles, useMysql,
+  status, isReady: () => ready,
+};

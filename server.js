@@ -176,7 +176,15 @@ const BUILD_TAG = 'auto-deploy-check-1';
 const STARTED_AT = new Date().toISOString();
 
 app.get('/api/version', (req, res) => {
-  res.json({ version: APP_VERSION, build: BUILD_TAG, started_at: STARTED_AT });
+  // Storage kind and durability are reported so a deploy can be checked from
+  // outside — "is state actually surviving?" is otherwise invisible until
+  // something is already lost. No path or credentials are exposed.
+  res.json({
+    version: APP_VERSION,
+    build: BUILD_TAG,
+    started_at: STARTED_AT,
+    storage: require('./store').status(),
+  });
 });
 
 app.get('/api/session', (req, res) => {
@@ -427,7 +435,11 @@ const store = require('./store');
     if (migrated.length) console.log('Store: imported from files -> ' + migrated.join(', '));
   } catch (err) {
     console.error('Store failed to start:', err.message);
-    console.error('Refusing to serve without durable storage — fix the database settings.');
+    console.error(
+      'Refusing to serve without durable storage — check DATA_DIR (must exist and be ' +
+      'writable) or the MYSQL_* settings. Starting anyway would silently reset every ' +
+      'approval and balance on each deploy.'
+    );
     process.exit(1);
   }
 

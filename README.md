@@ -107,8 +107,14 @@ The table is created automatically on first boot, and any existing `./data` file
 are imported once if the database is empty.
 
 **Files.** Without MySQL settings, state is JSON under `DATA_DIR` (default `./data`).
-That only survives deploys if `DATA_DIR` points somewhere the deploy does not
-overwrite, e.g. `/home/USERNAME/otp-panel-data`.
+Point it somewhere the deploy does not overwrite:
+
+    DATA_DIR=/home/USERNAME/otp-panel-data
+
+On boot the directory is created and a write is actually attempted, so a path that
+is not writable fails immediately instead of silently dropping every later save. If
+`DATA_DIR` is left unset the app warns loudly that state is ephemeral, and
+`GET /api/version` reports `storage.durable` so a deploy can be checked from outside.
 
 State is small, so each key is stored as a single JSON blob rather than a schema. It
 is read once at boot into memory and written back debounced, which keeps callers
