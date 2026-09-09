@@ -140,12 +140,22 @@ rather than the account's full balance.
 /skip                        cancel and blacklist the number
 /reuse                       reorder the last number at half price
 /price <service>             look up a price
-/balance                     account balance
+/balance                     balance, or your remaining allowance
+/usage                       what you have spent today
 /history                     recent orders
 /whoami                      your Telegram id
 ```
 
-Owner-only: `/pending`, `/users`, `/revoke <id>`.
+Owner-only:
+
+```
+/pending                     access requests waiting on you
+/users                       who has access
+/revoke <id>                 remove someone's access
+/limits                      everyone's daily limit and spend
+/limit <id> <eur>            set a daily limit (none = unlimited, 0 = blocked)
+/add <id> <eur>              add balance on top of the daily limit
+```
 
 Countries: `uk`, `usa`, `nl`, `de`, `pl`, `ph`. The trailing word is treated as a
 country only when it is one of those, so `/order google chat` still works.
