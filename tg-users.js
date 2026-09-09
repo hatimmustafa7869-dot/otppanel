@@ -159,15 +159,25 @@ function list() {
 // All arithmetic is in integer cents (the API's amount_minor). Never floats:
 // a cent lost to rounding here is a real charge that went unaccounted for.
 
+// Defaults to 0: a newly approved user can spend nothing until an owner funds
+// them with /add. That makes access and spending two separate decisions, so
+// approving someone can never by itself put the balance at risk.
 const DEFAULT_LIMIT_MINOR = (() => {
   const raw = process.env.TELEGRAM_DEFAULT_DAILY_LIMIT;
-  if (raw === undefined || raw === '') return 500; // €5.00/day unless told otherwise
+  if (raw === undefined || raw === '') return 0;
   if (/^(none|unlimited|0+(\.0+)?)$/i.test(String(raw).trim())) {
     return /^(none|unlimited)$/i.test(String(raw).trim()) ? null : 0;
   }
   const cents = Math.round(Number(raw) * 100);
-  return Number.isFinite(cents) && cents >= 0 ? cents : 500;
+  return Number.isFinite(cents) && cents >= 0 ? cents : 0;
 })();
+
+// With no daily cap configured, allowance comes purely from granted balance —
+// a wallet rather than a rate limit. Worth distinguishing, because the wording
+// shown to users is quite different.
+function isWalletMode(id) {
+  return getLimit(id) === 0;
+}
 
 function today() {
   return new Date().toISOString().slice(0, 10); // UTC day
@@ -299,6 +309,6 @@ module.exports = {
   load, ownerId, ownerIds, isOwner, claimOwner, isApproved, isDenied, isPending,
   requestAccess, approve, deny, revoke, list, describe,
   getLimit, setLimit, todaySpend, remaining, addSpend, refundSpend, eur,
-  getCredit, addCredit, setCredit, dailyRoom, totalCredit,
+  getCredit, addCredit, setCredit, dailyRoom, totalCredit, isWalletMode,
   DEFAULT_LIMIT_MINOR,
 };

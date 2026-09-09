@@ -108,9 +108,17 @@ State lives in `data/tg-users.json` (gitignored), so it survives restarts.
 
 ### Spending limits
 
-Approved users spend the owner's balance, so every non-owner has a **daily cap**,
-defaulting to `TELEGRAM_DEFAULT_DAILY_LIMIT` (€5.00 if unset). Owners are never
-capped — it is their money.
+Approving someone grants **access, not money**. A newly approved user can spend
+**nothing** until an owner funds them with `/add` — the two are separate decisions,
+so approving a stranger can never by itself put the balance at risk. Owners are
+never capped; it is their money.
+
+That default comes from `TELEGRAM_DEFAULT_DAILY_LIMIT=0`. Set it to a number of EUR
+to give every new user a recurring daily allowance instead, or `none` for unlimited.
+With the cap at 0 a user's allowance is purely their granted balance — a wallet that
+does not refill — and the bot's wording changes to match ("balance", not "daily
+limit"). The two models combine: someone with a €10/day cap *and* €50 granted can
+spend €10 a day, drawing on the €50 only once each day's cap is used up.
 
 - Cost is **reserved when the order is placed**, so a burst of orders cannot slip
   past the cap while the first is still pending.

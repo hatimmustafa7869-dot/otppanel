@@ -216,8 +216,12 @@ async function notifyOwnerOfRequest(from) {
     await send(
       owner,
       '🔔 <b>Access request</b>\n\n' + userLabel(users.describe(from)) +
-        '\n\n<i>Approving lets them order numbers, capped at ' +
-        esc(users.eur(users.DEFAULT_LIMIT_MINOR)) + '/day. Change it with /limit.</i>',
+        '\n\n<i>' +
+        (users.DEFAULT_LIMIT_MINOR === 0
+          ? 'Approving alone lets them spend nothing — fund them afterwards with /add.'
+          : 'Approving lets them order numbers, capped at ' +
+            esc(users.eur(users.DEFAULT_LIMIT_MINOR)) + '/day. Change it with /limit.') +
+        '</i>',
       {
         reply_markup: {
           inline_keyboard: [[
@@ -300,6 +304,13 @@ async function handleCommand(msg) {
       if (!owner) {
         const left = users.remaining(msg.from.id);
         if (left === null) return send(chatId, '💰 You have no spending limit.');
+        if (users.isWalletMode(msg.from.id)) {
+          return send(
+            chatId,
+            '💰 Your balance: <b>' + esc(users.eur(left)) + '</b>' +
+              (left === 0 ? '\n\n<i>Ask an owner to add balance before ordering.</i>' : '')
+          );
+        }
         const myCredit = users.getCredit(msg.from.id);
         return send(
           chatId,
@@ -319,6 +330,14 @@ async function handleCommand(msg) {
       const left = users.remaining(msg.from.id);
       if (left === null) return send(chatId, 'You have no spending limit.');
       const credit = users.getCredit(msg.from.id);
+      if (users.isWalletMode(msg.from.id)) {
+        return send(
+          chatId,
+          'Balance: <b>' + esc(users.eur(left)) + '</b>\n' +
+            'Spent today: ' + esc(users.eur(users.todaySpend(msg.from.id))) + '\n\n' +
+            '<i>Balance does not expire. Only an owner can top it up.</i>'
+        );
+      }
       return send(
         chatId,
         'Available now: <b>' + esc(users.eur(left)) + '</b>\n\n' +
@@ -427,14 +446,26 @@ async function handleCommand(msg) {
           continue;
         }
         const credit = users.getCredit(u.id);
-        lines.push(
-          '• ' + userLabel(u) + '\n    ' +
-          esc(users.eur(users.todaySpend(u.id))) + ' spent of ' + esc(users.eur(users.getLimit(u.id))) +
-          (credit ? ' · +' + esc(users.eur(credit)) + ' balance' : '') +
-          ' · <b>' + esc(users.eur(users.remaining(u.id))) + '</b> available'
-        );
+        if (users.isWalletMode(u.id)) {
+          lines.push(
+            '• ' + userLabel(u) + '\n    balance <b>' + esc(users.eur(credit)) + '</b>' +
+            ' · spent today ' + esc(users.eur(users.todaySpend(u.id)))
+          );
+        } else {
+          lines.push(
+            '• ' + userLabel(u) + '\n    ' +
+            esc(users.eur(users.todaySpend(u.id))) + ' spent of ' + esc(users.eur(users.getLimit(u.id))) +
+            (credit ? ' · +' + esc(users.eur(credit)) + ' balance' : '') +
+            ' · <b>' + esc(users.eur(users.remaining(u.id))) + '</b> available'
+          );
+        }
       }
-      lines.push('', '<i>Default for new users: ' + esc(users.eur(users.DEFAULT_LIMIT_MINOR)) + '/day</i>');
+      lines.push(
+        '',
+        users.DEFAULT_LIMIT_MINOR === 0
+          ? '<i>New users start with no balance — fund them with /add.</i>'
+          : '<i>Default for new users: ' + esc(users.eur(users.DEFAULT_LIMIT_MINOR)) + '/day</i>'
+      );
 
       // Granted credit is a claim on the shared balance, so show what is left.
       const acct = await juicy('/account');
@@ -492,6 +523,17 @@ async function handleCommand(msg) {
       const priceMinor = (svc.price && svc.price.amount_minor) || 0;
       const left = users.remaining(msg.from.id);
       if (left !== null && priceMinor > left) {
+        // With no daily cap the shortfall is simply a lack of funds, and
+        // telling the user to wait for a reset that never comes would be wrong.
+        if (users.isWalletMode(msg.from.id)) {
+          return send(
+            chatId,
+            '🚫 <b>Not enough balance.</b>\n\n' +
+              esc(svc.name) + ' costs ' + esc(users.eur(priceMinor)) +
+              ', your balance is ' + esc(users.eur(left)) + '.\n\n' +
+              '<i>Ask an owner to add balance.</i>'
+          );
+        }
         return send(
           chatId,
           '🚫 <b>Daily limit reached.</b>\n\n' +
@@ -648,11 +690,20 @@ async function handleCallback(cb) {
     if (!users.isOwner(cb.from.id)) return send(chatId, 'Owner only.');
     if (action === 'approve') {
       const u = users.approve(orderId);
-      await send(chatId, '✅ Approved ' + userLabel(u));
+      const wallet = users.isWalletMode(orderId);
+      await send(
+        chatId,
+        '✅ Approved ' + userLabel(u) +
+          (wallet ? '\n\n<i>They have no balance yet — use <code>/add ' + esc(orderId) + ' 5</code> to fund them.</i>' : '')
+      );
       await send(
         orderId,
-        '✅ <b>Access granted.</b>\n\nDaily limit: <b>' + esc(users.eur(users.getLimit(orderId))) + '</b>\n\n' +
-          'Send <code>/help</code> to see what I can do.'
+        '✅ <b>Access granted.</b>\n\n' +
+          (wallet
+            ? 'Your balance is <b>' + esc(users.eur(users.remaining(orderId))) +
+              '</b> — an owner needs to add balance before you can order.'
+            : 'Daily limit: <b>' + esc(users.eur(users.getLimit(orderId))) + '</b>') +
+          '\n\nSend <code>/help</code> to see what I can do.'
       );
     } else {
       users.deny(orderId);
