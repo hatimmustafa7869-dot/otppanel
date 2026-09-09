@@ -214,6 +214,13 @@ function addCredit(id, minor) {
   return next;
 }
 
+// Every cent of granted credit is a claim on the one shared JuicySMS balance,
+// so grants are validated against the sum, not against each user in isolation.
+function totalCredit() {
+  const s = load();
+  return Object.values(s.credits).reduce((sum, v) => sum + Math.max(0, Number(v) || 0), 0);
+}
+
 function setCredit(id, minor) {
   const s = load();
   s.credits[String(id)] = Math.max(0, Math.round(Number(minor) || 0));
@@ -292,6 +299,6 @@ module.exports = {
   load, ownerId, ownerIds, isOwner, claimOwner, isApproved, isDenied, isPending,
   requestAccess, approve, deny, revoke, list, describe,
   getLimit, setLimit, todaySpend, remaining, addSpend, refundSpend, eur,
-  getCredit, addCredit, setCredit, dailyRoom,
+  getCredit, addCredit, setCredit, dailyRoom, totalCredit,
   DEFAULT_LIMIT_MINOR,
 };

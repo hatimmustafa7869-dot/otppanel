@@ -120,6 +120,14 @@ capped — it is their money.
 - The window is the **UTC day**; spend from previous days never counts against today.
 - All arithmetic is in integer cents (`amount_minor`), never floats.
 
+Grants are **validated against the real JuicySMS balance**, and across all users
+rather than one at a time: every granted cent is a claim on the same shared pot, so
+`/add` refuses when the total already granted plus the new grant would exceed what
+the account actually holds. Taking credit back is always allowed, and frees headroom
+for someone else. If the balance cannot be read, the grant is refused rather than
+made on a guess. `/limits` shows the account balance, the total granted, and what is
+still free to grant.
+
 A one-off top-up is separate from the cap: `/add <id> <eur>` grants balance that
 **does not reset daily** and is spent only once the day’s allowance is used up, so a
 user can be given extra without permanently raising their limit. A negative amount

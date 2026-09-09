@@ -367,6 +367,36 @@ async function handleCommand(msg) {
       }
 
       const minor = Math.round(amount * 100);
+
+      // Granting more than the account holds would only fail later, upstream,
+      // as insufficient_balance — and by then the user has been told they have
+      // money they cannot spend. Validate against the real balance instead.
+      // Taking credit back is always allowed: it reduces the claim.
+      if (minor > 0) {
+        const acct = await juicy('/account');
+        if (acct.status !== 200) {
+          return send(
+            chatId,
+            '❌ Could not check the account balance, so the grant was not made.\n' +
+              '<i>' + esc(acct.data.detail || acct.data.title || 'JuicySMS did not respond.') + '</i>'
+          );
+        }
+        const balanceMinor = (acct.data.balance && acct.data.balance.amount_minor) || 0;
+        const allocated = users.totalCredit();
+        const headroom = balanceMinor - allocated;
+
+        if (minor > headroom) {
+          return send(
+            chatId,
+            '🚫 <b>Not enough unallocated balance.</b>\n\n' +
+              'Account balance: <b>' + esc(users.eur(balanceMinor)) + '</b>\n' +
+              'Already granted: ' + esc(users.eur(allocated)) + '\n' +
+              'Free to grant: <b>' + esc(users.eur(Math.max(0, headroom))) + '</b>\n\n' +
+              'You tried to add ' + esc(users.eur(minor)) + '.'
+          );
+        }
+      }
+
       const total = users.addCredit(target, minor);
       const verb = minor > 0 ? 'Added' : 'Removed';
 
@@ -405,6 +435,23 @@ async function handleCommand(msg) {
         );
       }
       lines.push('', '<i>Default for new users: ' + esc(users.eur(users.DEFAULT_LIMIT_MINOR)) + '/day</i>');
+
+      // Granted credit is a claim on the shared balance, so show what is left.
+      const acct = await juicy('/account');
+      if (acct.status === 200) {
+        const balanceMinor = (acct.data.balance && acct.data.balance.amount_minor) || 0;
+        const allocated = users.totalCredit();
+        lines.push(
+          '',
+          '<b>Balance allocation</b>',
+          'Account: ' + esc(users.eur(balanceMinor)),
+          'Granted: ' + esc(users.eur(allocated)),
+          'Free to grant: <b>' + esc(users.eur(Math.max(0, balanceMinor - allocated))) + '</b>'
+        );
+        if (allocated > balanceMinor) {
+          lines.push('⚠️ <i>Granted more than the account holds — orders will fail upstream.</i>');
+        }
+      }
       return send(chatId, lines.join('\n'));
     }
 
