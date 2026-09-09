@@ -226,6 +226,14 @@ Delivery is paced at ~60ms per message to stay inside Telegram rate limits, and 
 summary reports how many landed plus the ids that failed — usually someone who
 blocked the bot.
 
+### Order ids
+
+Order ids are not shown in any message a user can see. A forwarded or
+screenshotted message would otherwise identify the order to whoever received it,
+and nothing in the bot needs the id on screen: cancel, skip and reuse act on the
+open order, and the inline buttons carry it in callback data, which stays between
+Telegram and the server. Owners can still retrieve ids with .
+
 ### Commands
 
 ```
@@ -248,6 +256,7 @@ Owner-only:
 /pending                     access requests waiting on you
 /users                       who has access
 /revoke <id>                 remove someone's access
+/last [n]                    recent orders with their ids (1-10)
 /broadcast <text>            message every approved user
 /ban <id>                    ignore them completely
 /unban <id>                  lift a ban

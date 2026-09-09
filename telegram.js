@@ -60,6 +60,13 @@ function fmtDate(iso) {
   return d.toISOString().slice(0, 10);
 }
 
+// Date and time, for troubleshooting where the day alone is not enough.
+function fmtStamp(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '—';
+  return d.toISOString().slice(0, 16).replace('T', ' ') + 'Z';
+}
+
 // Telegram renders HTML, so anything interpolated from an SMS must be escaped.
 function esc(s) {
   return String(s === undefined || s === null ? '' : s)
@@ -374,6 +381,7 @@ const OWNER_HELP = [
   '<code>/pending</code> — access requests waiting on you',
   '<code>/users</code> — who has access',
   '<code>/revoke &lt;id&gt;</code> — remove someone’s access',
+  '<code>/last [n]</code> — recent orders with their ids',
   '<code>/broadcast &lt;text&gt;</code> — message every approved user',
   '<code>/ban &lt;id&gt;</code> — ignore them completely',
   '<code>/unban &lt;id&gt;</code> — lift a ban',
@@ -568,6 +576,47 @@ async function handleCommand(msg) {
       const { status, data } = await juicy('/account');
       if (status !== 200) return send(chatId, '❌ ' + esc(data.detail || data.title || 'Could not read the account.'));
       return send(chatId, '💰 Balance: <b>' + esc(money(data.balance)) + '</b>');
+    }
+
+    case '/last': {
+      // Owner only: order ids are deliberately hidden everywhere else, so that
+      // a forwarded message cannot identify an order. This is the one place to
+      // get them back, in the owner's own chat, for troubleshooting.
+      if (!owner) return send(chatId, 'Owner only.');
+
+      const count = Math.min(Math.max(parseInt(args[0], 10) || 1, 1), 10);
+      const { status, data } = await juicy('/orders', { query: { limit: count } });
+      if (status !== 200) return send(chatId, '❌ ' + esc(data.detail || 'Could not load orders.'));
+
+      const list = data.data || [];
+      if (!list.length) return send(chatId, 'No orders on the account yet.');
+
+      const blocks = [];
+      for (const o of list) {
+        const parts = [
+          '<code>' + esc(o.phone_number || '—') + '</code>',
+          esc(o.service ? o.service.name : '') + ' · ' + esc(o.country),
+          'ID: <code>' + esc(o.id) + '</code>',
+          'Status: <b>' + esc(o.status) + '</b> · ' + esc(fmtStamp(o.created_at)),
+        ];
+        if (o.reused_from_order_id) {
+          parts.push('Reused from: <code>' + esc(o.reused_from_order_id) + '</code>');
+        }
+        // Only one lookup deep, so /last 10 does not fan out into ten calls.
+        if (count === 1 && o.status === 'completed') {
+          const msgs = await juicy('/orders/' + o.id + '/messages');
+          const first = msgs.status === 200 ? (msgs.data.data || [])[0] : null;
+          if (first) parts.push('Code: <code>' + esc(codeOf(first) || '?') + '</code>');
+        }
+        blocks.push(parts.join('\n'));
+      }
+
+      return send(
+        chatId,
+        '🧾 <b>' + (count === 1 ? 'Last order' : 'Last ' + list.length + ' orders') + '</b>\n\n' +
+          blocks.join('\n\n') +
+          '\n\n<i>Account-wide, including the web panel.</i>'
+      );
     }
 
     case '/stats': {
