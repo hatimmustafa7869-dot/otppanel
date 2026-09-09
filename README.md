@@ -37,16 +37,31 @@ npm start
 
 Open <http://localhost:3200>.
 
-## Optional login gate
+## Login
 
-Set both values in `.env` to require a username/password before the panel loads:
+The panel has a session-based login. It is armed whenever `PANEL_PASS` is set:
 
 ```
 PANEL_USER=admin
-PANEL_PASS=something-long
+PANEL_PASS=a-long-random-password
+SESSION_SECRET=64-hex-chars
 ```
 
-Leave them unset for local use.
+Once armed, **everything** requires a session — the UI, the static assets, and every
+`/api` route that can spend money. Signed-out browsers are redirected to `/login`;
+signed-out API calls get `401 not_signed_in`.
+
+- The session cookie is httpOnly, `sameSite=lax`, and `secure` once behind an HTTPS proxy.
+- Credentials are compared in constant time, and a failed login never reveals which half
+  was wrong.
+- Eight failed attempts from one IP locks that IP out for 15 minutes.
+- The session id is regenerated on login, so a fixated cookie cannot be reused.
+- `SESSION_SECRET` signs the cookie. If unset, a random one is generated per boot, which
+  means every restart logs you out — fine locally, set it in production.
+
+**If `PANEL_PASS` is unset the panel runs completely open** and prints a loud warning at
+startup. That is only appropriate on localhost. Never deploy it that way: anyone who
+reaches the URL can order numbers against your balance.
 
 ## API endpoints proxied
 

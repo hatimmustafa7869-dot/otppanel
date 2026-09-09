@@ -22,6 +22,20 @@ const state = {
   fx: { rate: null, as_of: null, source: null },
 };
 
+// Show the sign-out button only when a login gate is actually configured.
+async function loadSession() {
+  try {
+    const info = await api('/session');
+    if (info.auth_enabled && info.user) {
+      const form = document.getElementById('logoutForm');
+      if (form) {
+        form.hidden = false;
+        form.title = 'Signed in as ' + info.user;
+      }
+    }
+  } catch { /* not fatal — the panel still works */ }
+}
+
 // EUR -> USD for display only; prices and charges stay in EUR.
 async function loadFx() {
   try {
@@ -813,6 +827,7 @@ $('#catalogSearch').addEventListener('input', () => {
 
 fillCountrySelects();
 // The rate is fetched first so every price renders with its USD figure already.
+loadSession();
 loadFx().then(() => {
   loadAccount();
   loadServices($('#orderCountry').value);
