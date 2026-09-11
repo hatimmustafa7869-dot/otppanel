@@ -8,11 +8,10 @@ const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3200;
-const API_BASE = process.env.JUICYSMS_API_BASE || 'https://juicysms.com/api/v2';
-const API_KEY = process.env.JUICYSMS_API_KEY;
+const API_KEY = process.env.SMSOTPS_API_KEY;
 
 if (!API_KEY) {
-  console.error('Missing JUICYSMS_API_KEY in .env — the panel will start but every call will fail.');
+  console.error('Missing SMSOTPS_API_KEY in .env — the panel will start but every call will fail.');
 }
 
 app.set('trust proxy', 1);
@@ -176,6 +175,9 @@ const BUILD_TAG = 'persistence-test';
 const STARTED_AT = new Date().toISOString();
 
 app.get('/api/version', (req, res) => {
+  // Readable cross-origin on purpose: the portfolio polls this to show whether
+  // the panel is actually up. The body is already public and holds no secrets.
+  res.set('Access-Control-Allow-Origin', '*');
   // Storage kind and durability are reported so a deploy can be checked from
   // outside — "is state actually surviving?" is otherwise invisible until
   // something is already lost. No path or credentials are exposed.
@@ -226,19 +228,9 @@ app.use((req, res, next) => {
   res.redirect('/login');
 });
 
-// ---------- JuicySMS client ----------
+// ---------- smsotps client ----------
 // Shared with the Telegram bot; the API key never leaves the server.
-const { juicy } = require('./juicysms');
-
-// Forwards upstream status codes untouched so the UI can react to
-// out_of_stock / insufficient_balance / rate_limited by code.
-function forward(res, result) {
-  if (result.rate && result.rate.limit) {
-    res.set('X-Upstream-RateLimit-Limit', result.rate.limit);
-    res.set('X-Upstream-RateLimit-Remaining', result.rate.remaining || '');
-  }
-  res.status(result.status).json(result.data);
-}
+const sms = require('./smsotps');
 
 const wrap = (handler) => (req, res) => {
   handler(req, res).catch((err) => {
@@ -247,166 +239,91 @@ const wrap = (handler) => (req, res) => {
   });
 };
 
+// Upstream status codes are passed through so the UI can react by code.
+function forward(res, result) {
+  res.status(result.status).json(result.data);
+}
+
 // ---------- Account ----------
 app.get('/api/account', wrap(async (req, res) => {
-  forward(res, await juicy('/account'));
+  const { status, data, balance } = await sms.getBalance();
+  if (status !== 200) return res.status(status).json(data);
+  res.json({ balance, currency: sms.CURRENCY });
 }));
 
-// ---------- Services ----------
+// ---------- Catalog ----------
+app.get('/api/providers', (req, res) => {
+  res.json({ data: sms.PROVIDERS, default: sms.PROVIDERS[0] });
+});
+
 app.get('/api/services', wrap(async (req, res) => {
-  forward(res, await juicy('/services', {
-    query: { country: req.query.country, search: req.query.search },
-  }));
+  const provider = req.query.provider || sms.PROVIDERS[0];
+  if (!sms.providerOk(provider)) {
+    return res.status(422).json({ code: 'bad_provider', title: 'Unknown provider' });
+  }
+  const search = String(req.query.search || '').trim().toLowerCase();
+  let list = await sms.listServices(provider);
+  if (search) list = list.filter((s) => s.name.toLowerCase().includes(search) || s.code === search);
+  res.json({ data: list, provider });
+}));
+
+app.get('/api/countries', wrap(async (req, res) => {
+  const provider = req.query.provider || sms.PROVIDERS[0];
+  if (!sms.providerOk(provider)) {
+    return res.status(422).json({ code: 'bad_provider', title: 'Unknown provider' });
+  }
+  const search = String(req.query.search || '').trim().toLowerCase();
+  let list = await sms.listCountries(provider);
+  if (search) list = list.filter((c) => c.name.toLowerCase().includes(search));
+  res.json({ data: list, provider });
+}));
+
+// Prices are per provider + service + country, so the UI asks for them only
+// once all three are chosen.
+app.get('/api/offers', wrap(async (req, res) => {
+  const { provider = sms.PROVIDERS[0], service, country } = req.query;
+  if (!service || !country) {
+    return res.status(422).json({ code: 'validation_failed', title: 'service and country are required' });
+  }
+  const { status, data, offers } = await sms.listOffers(provider, service, country);
+  if (status !== 200) return res.status(status).json(data);
+  res.json({ data: offers, provider, service, country });
 }));
 
 // ---------- Orders ----------
 app.post('/api/orders', wrap(async (req, res) => {
-  const { country, service_id, max_price } = req.body || {};
-  if (!country || !service_id) {
+  const { provider = sms.PROVIDERS[0], service, country, operator, max_price: maxPrice } = req.body || {};
+  if (!service || !country) {
     return res.status(422).json({
       code: 'validation_failed',
       title: 'Missing fields',
-      detail: 'Both country and service_id are required.',
+      detail: 'Both service and country are required.',
     });
   }
-  const body = { country, service_id: Number(service_id) };
-  if (max_price !== undefined && max_price !== '' && max_price !== null) {
-    body.max_price = String(max_price);
-  }
-  forward(res, await juicy('/orders', { method: 'POST', body }));
+  forward(res, await sms.createOrder({ provider, service, country, operator, maxPrice }));
 }));
 
+// Past orders come only from the undocumented /history, which is also the only
+// place price and sms_code appear.
 app.get('/api/orders', wrap(async (req, res) => {
-  forward(res, await juicy('/orders', {
-    query: {
-      status: req.query.status,
-      limit: req.query.limit,
-      cursor: req.query.cursor,
-      service_id: req.query.service_id,
-      created_after: req.query.created_after,
-      created_before: req.query.created_before,
-    },
-  }));
+  const { status, data, rows, pagination } = await sms.getHistory({ page: req.query.page || 1 });
+  if (status !== 200) return res.status(status).json(data);
+  res.json({ data: rows, pagination });
 }));
 
 app.get('/api/orders/:id', wrap(async (req, res) => {
-  forward(res, await juicy('/orders/' + encodeURIComponent(req.params.id)));
+  const { status, data, parsed } = await sms.getStatus(req.params.id);
+  if (status !== 200) return res.status(status).json(data);
+  res.json({ id: req.params.id, ...parsed, raw: data });
 }));
 
-app.get('/api/orders/:id/messages', wrap(async (req, res) => {
-  forward(res, await juicy('/orders/' + encodeURIComponent(req.params.id) + '/messages'));
+app.post('/api/orders/:id/cancel', wrap(async (req, res) => {
+  forward(res, await sms.cancelOrder(req.params.id));
 }));
 
-for (const action of ['cancel', 'skip', 'reuse']) {
-  app.post('/api/orders/:id/' + action, wrap(async (req, res) => {
-    forward(res, await juicy('/orders/' + encodeURIComponent(req.params.id) + '/' + action, { method: 'POST' }));
-  }));
-}
-
-// ---------- Rentals ----------
-app.get('/api/rental-packages', wrap(async (req, res) => {
-  forward(res, await juicy('/rental-packages'));
-}));
-
-app.post('/api/rentals', wrap(async (req, res) => {
-  const { country, package: pkg, auto_renew } = req.body || {};
-  if (!country || !pkg) {
-    return res.status(422).json({
-      code: 'validation_failed',
-      title: 'Missing fields',
-      detail: 'Both country and package are required.',
-    });
-  }
-  forward(res, await juicy('/rentals', {
-    method: 'POST',
-    body: { country, package: pkg, auto_renew: Boolean(auto_renew) },
-  }));
-}));
-
-app.get('/api/rentals', wrap(async (req, res) => {
-  forward(res, await juicy('/rentals', {
-    query: { status: req.query.status, limit: req.query.limit, cursor: req.query.cursor },
-  }));
-}));
-
-app.get('/api/rentals/:id', wrap(async (req, res) => {
-  forward(res, await juicy('/rentals/' + encodeURIComponent(req.params.id)));
-}));
-
-app.get('/api/rentals/:id/messages', wrap(async (req, res) => {
-  forward(res, await juicy('/rentals/' + encodeURIComponent(req.params.id) + '/messages'));
-}));
-
-app.patch('/api/rentals/:id', wrap(async (req, res) => {
-  const body = {};
-  if (req.body && 'auto_renew' in req.body) body.auto_renew = Boolean(req.body.auto_renew);
-  if (req.body && req.body.renewal_package) body.renewal_package = req.body.renewal_package;
-  forward(res, await juicy('/rentals/' + encodeURIComponent(req.params.id), { method: 'PATCH', body }));
-}));
-
-app.post('/api/rentals/:id/extend', wrap(async (req, res) => {
-  const pkg = (req.body || {}).package;
-  if (!pkg) {
-    return res.status(422).json({ code: 'validation_failed', title: 'Missing package', detail: 'package is required.' });
-  }
-  forward(res, await juicy('/rentals/' + encodeURIComponent(req.params.id) + '/extend', {
-    method: 'POST',
-    body: { package: pkg },
-  }));
-}));
-
-// ---------- FX (EUR -> USD) ----------
-// JuicySMS prices and charges strictly in EUR, so USD is a display-only
-// convenience. Rates are cached for an hour; a failure is not fatal — the UI
-// simply falls back to showing EUR alone.
-const FX_TTL_MS = 60 * 60 * 1000;
-let fxCache = { rate: null, as_of: null, source: null, fetched_at: 0 };
-
-async function fetchRate() {
-  // Primary: ECB reference rates via Frankfurter.
-  try {
-    const res = await fetch('https://api.frankfurter.dev/v1/latest?base=EUR&symbols=USD', {
-      signal: AbortSignal.timeout(8000),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.rates && data.rates.USD) {
-        return { rate: data.rates.USD, as_of: data.date, source: 'ECB via frankfurter.dev' };
-      }
-    }
-  } catch { /* fall through to the backup source */ }
-
-  try {
-    const res = await fetch('https://open.er-api.com/v6/latest/EUR', {
-      signal: AbortSignal.timeout(8000),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.rates && data.rates.USD) {
-        return {
-          rate: data.rates.USD,
-          as_of: (data.time_last_update_utc || '').slice(5, 16),
-          source: 'exchangerate-api.com',
-        };
-      }
-    }
-  } catch { /* no rate available */ }
-
-  return null;
-}
-
-app.get('/api/fx', wrap(async (req, res) => {
-  if (fxCache.rate && Date.now() - fxCache.fetched_at < FX_TTL_MS) {
-    return res.json({ ...fxCache, cached: true });
-  }
-  const fresh = await fetchRate();
-  if (fresh) {
-    fxCache = { ...fresh, fetched_at: Date.now() };
-    return res.json({ ...fxCache, cached: false });
-  }
-  // Serve a stale rate rather than nothing, if we ever had one.
-  if (fxCache.rate) return res.json({ ...fxCache, cached: true, stale: true });
-  res.status(503).json({ code: 'fx_unavailable', title: 'No exchange rate available' });
+// The provider's own "another SMS on this number", which replaces the old reuse.
+app.post('/api/orders/:id/resend', wrap(async (req, res) => {
+  forward(res, await sms.resendSms(req.params.id));
 }));
 
 // ---------- Panel meta ----------

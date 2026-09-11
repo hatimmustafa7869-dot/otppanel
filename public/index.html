@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>OTP Panel — JuicySMS</title>
+<title>OTP Panel — smsotps</title>
 <link rel="stylesheet" href="/style.css" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📮</text></svg>" />
 </head>
@@ -14,7 +14,7 @@
     <span class="brand-mark">📮</span>
     <div>
       <h1>OTP Panel</h1>
-      <p class="brand-sub">JuicySMS API v2</p>
+      <p class="brand-sub">smsotps.com</p>
     </div>
   </div>
 
@@ -22,7 +22,6 @@
     <div class="balance-chip" id="balanceChip" title="Account balance">
       <span class="balance-label">Balance</span>
       <span class="balance-value" id="balanceValue">—</span>
-      <span class="usd" id="balanceUsd"></span>
     </div>
     <button class="btn ghost icon-btn" id="refreshBtn" title="Refresh account">⟳</button>
     <form method="POST" action="/logout" id="logoutForm" hidden>
@@ -34,7 +33,6 @@
 <nav class="tabs" id="tabs">
   <button class="tab active" data-view="order">Get number</button>
   <button class="tab" data-view="orders">Orders</button>
-  <button class="tab" data-view="rentals">Rentals</button>
   <button class="tab" data-view="services">Prices</button>
 </nav>
 
@@ -44,30 +42,38 @@
   <section class="view active" id="view-order">
     <div class="grid">
       <div class="card">
-        <h2>Order a one-time number</h2>
-        <p class="muted small">Charged only if a message arrives. Numbers expire after 10 minutes.</p>
+        <h2>Order a number</h2>
+        <p class="muted small">You are charged only when a code arrives. Numbers expire after about 20 minutes.</p>
+
+        <label class="field">
+          <span>Provider</span>
+          <select id="orderProvider"></select>
+        </label>
 
         <label class="field">
           <span>Country</span>
-          <select id="orderCountry"></select>
+          <div class="combo">
+            <input type="search" id="countrySearch" placeholder="Search countries…" autocomplete="off" />
+            <select id="orderCountry"><option value="">Loading…</option></select>
+          </div>
         </label>
 
         <label class="field">
           <span>Service</span>
           <div class="combo">
-            <input type="text" id="serviceSearch" placeholder="Search services…" autocomplete="off" />
-            <select id="orderService"><option value="">Loading services…</option></select>
+            <input type="search" id="serviceSearch" placeholder="Search services…" autocomplete="off" />
+            <select id="orderService"><option value="">Loading…</option></select>
           </div>
         </label>
 
         <label class="field">
-          <span>Max price (EUR, optional)</span>
-          <input type="number" id="maxPrice" step="0.01" min="0" placeholder="e.g. 0.60" />
+          <span>Operator</span>
+          <select id="orderOperator"><option value="">Cheapest available</option></select>
         </label>
 
         <div class="row between">
-          <div class="price-preview" id="pricePreview">Select a service to see the price</div>
-          <button class="btn primary" id="orderBtn">Order number</button>
+          <div class="price-preview" id="pricePreview">Pick a service and country to see prices</div>
+          <button class="btn primary" id="orderBtn" disabled>Order number</button>
         </div>
       </div>
 
@@ -83,73 +89,28 @@
     <div class="card">
       <div class="row between wrap">
         <h2>Order history</h2>
-        <div class="row gap">
-          <select id="orderStatusFilter">
-            <option value="">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="completed">Completed</option>
-            <option value="canceled">Canceled</option>
-            <option value="expired">Expired</option>
-          </select>
-          <button class="btn ghost" id="ordersRefresh">Refresh</button>
-        </div>
+        <button class="btn ghost" id="ordersRefresh">Refresh</button>
       </div>
       <div id="ordersList" class="list"><div class="empty">Loading…</div></div>
       <div class="row center" id="ordersPager"></div>
     </div>
   </section>
 
-  <!-- ============ RENTALS ============ -->
-  <section class="view" id="view-rentals">
-    <div class="grid">
-      <div class="card">
-        <h2>Rent a number</h2>
-        <p class="muted small">Long-term numbers, charged upfront. Available in NL and UK.</p>
-
-        <label class="field">
-          <span>Country</span>
-          <select id="rentalCountry">
-            <option value="UK">🇬🇧 United Kingdom (+44)</option>
-            <option value="NL">🇳🇱 Netherlands (+31)</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>Package</span>
-          <select id="rentalPackage"><option value="">Loading packages…</option></select>
-        </label>
-
-        <label class="check">
-          <input type="checkbox" id="rentalAutoRenew" />
-          <span>Auto-renew when it expires</span>
-        </label>
-
-        <div class="row end">
-          <button class="btn primary" id="rentalBtn">Rent number</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="row between">
-          <h2>My rentals</h2>
-          <button class="btn ghost" id="rentalsRefresh">Refresh</button>
-        </div>
-        <div id="rentalsList" class="list"><div class="empty">Loading…</div></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ SERVICES / PRICES ============ -->
+  <!-- ============ PRICES ============ -->
   <section class="view" id="view-services">
     <div class="card">
       <div class="row between wrap">
-        <h2>Service catalog</h2>
+        <h2>Prices</h2>
         <div class="row gap">
+          <select id="catalogProvider"></select>
           <select id="catalogCountry"></select>
-          <input type="search" id="catalogSearch" placeholder="Search…" />
+          <input type="search" id="catalogSearch" placeholder="Search services…" />
         </div>
       </div>
-      <div id="catalogList" class="catalog"><div class="empty">Loading…</div></div>
+      <p class="muted small" id="catalogHint">
+        Pick a country, then search for a service. Prices are looked up per service.
+      </p>
+      <div id="catalogList" class="catalog"></div>
     </div>
   </section>
 
